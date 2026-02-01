@@ -152,7 +152,8 @@ struct RecipeRow: View {
 // MARK: - Shared Preferences View
 
 struct SharedPreferencesView: View {
-    @ObservedObject var sharedState: SharedState<UserPreferences>
+    // SharedState uses @Observable, so no property wrapper needed
+    var sharedState: SharedState<UserPreferences>
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
