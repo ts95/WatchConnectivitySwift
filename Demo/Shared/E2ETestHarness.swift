@@ -45,11 +45,59 @@ struct E2EFireAndForgetRequest: FireAndForgetRequest {
     let payload: String
 }
 
+/// Request for bidirectional test: iOS asks watchOS to send a ping back to iOS.
+struct E2ETriggerReversePingRequest: WatchRequest {
+    typealias Response = E2ETriggerReversePingResponse
+    let testID: UUID
+}
+
+struct E2ETriggerReversePingResponse: Codable, Sendable {
+    let success: Bool
+    let echoedTestID: UUID
+    let errorMessage: String?
+}
+
+/// Request for bidirectional test: watchOS sends this to iOS.
+struct E2EReversePingRequest: WatchRequest {
+    typealias Response = E2EReversePingResponse
+    let testID: UUID
+    let originPlatform: String
+}
+
+struct E2EReversePingResponse: Codable, Sendable {
+    let echoedTestID: UUID
+    let responderPlatform: String
+}
+
+/// Request to verify multiple SharedState instances received updates.
+struct E2EVerifyMulticastRequest: WatchRequest {
+    typealias Response = E2EVerifyMulticastResponse
+    let expectedStateAValue: Int
+    let expectedStateBValue: String
+}
+
+struct E2EVerifyMulticastResponse: Codable, Sendable {
+    let stateAMatches: Bool
+    let stateBMatches: Bool
+    let actualStateAValue: Int
+    let actualStateBValue: String
+}
+
 /// Shared state for E2E testing
 struct E2ETestState: Codable, Sendable, Equatable {
     var counter: Int = 0
     var lastUpdatedBy: String = ""
     var messages: [String] = []
+}
+
+/// Additional shared state type A for multicast testing
+struct E2ETestStateA: Codable, Sendable, Equatable {
+    var value: Int = 0
+}
+
+/// Additional shared state type B for multicast testing
+struct E2ETestStateB: Codable, Sendable, Equatable {
+    var value: String = ""
 }
 
 // MARK: - Test Result Types
@@ -67,14 +115,35 @@ enum E2ETestResult: Sendable {
 final class E2ETestDriver: ObservableObject {
     private let connection: WatchConnection
     private let sharedState: SharedState<E2ETestState>
+    private let sharedStateA: SharedState<E2ETestStateA>
+    private let sharedStateB: SharedState<E2ETestStateB>
 
     @Published private(set) var isRunning = false
     @Published private(set) var results: [E2ETestResult] = []
     @Published private(set) var currentTest: String = ""
+    @Published private(set) var reversePingReceived = false
 
     init(connection: WatchConnection, sharedState: SharedState<E2ETestState>) {
         self.connection = connection
         self.sharedState = sharedState
+        // Create additional SharedState instances for multicast testing
+        self.sharedStateA = SharedState(initialValue: E2ETestStateA(), connection: connection)
+        self.sharedStateB = SharedState(initialValue: E2ETestStateB(), connection: connection)
+
+        // Register handler for reverse ping (watchOS → iOS)
+        setupHandlers()
+    }
+
+    private func setupHandlers() {
+        // Handle reverse ping from watchOS
+        connection.register(E2EReversePingRequest.self) { [weak self] request in
+            print("[E2E iOS] Received reverse ping from \(request.originPlatform)")
+            await MainActor.run { self?.reversePingReceived = true }
+            return E2EReversePingResponse(
+                echoedTestID: request.testID,
+                responderPlatform: "iOS"
+            )
+        }
     }
 
     /// Run all E2E tests and report results
@@ -105,6 +174,8 @@ final class E2ETestDriver: ObservableObject {
         await runTest("SharedState Sync") { try await self.testSharedStateSync() }
         await runTest("Multiple Pings") { try await self.testMultiplePings() }
         await runTest("Concurrent Pings") { try await self.testConcurrentPings() }
+        await runTest("Bidirectional Communication") { try await self.testBidirectionalCommunication() }
+        await runTest("Multiple SharedState Multicast") { try await self.testMultipleSharedStateMulticast() }
 
         reportFinalResult()
         isRunning = false
@@ -243,6 +314,68 @@ final class E2ETestDriver: ObservableObject {
         // We're just verifying the roundtrip works - the watch might return empty if not set up
         print("[E2E] Received \(recipesResponse.count) recipes from Watch")
     }
+
+    private func testBidirectionalCommunication() async throws {
+        // Test watchOS → iOS communication
+        // iOS tells watchOS to send a ping back to iOS
+        let testID = UUID()
+        reversePingReceived = false
+
+        print("[E2E] Triggering reverse ping from watchOS...")
+        let response = try await connection.sendWhenReady(
+            E2ETriggerReversePingRequest(testID: testID),
+            maxAttempts: 3,
+            connectionTimeout: .seconds(15)
+        )
+
+        guard response.success else {
+            throw E2EError.assertionFailed("Reverse ping failed: \(response.errorMessage ?? "unknown error")")
+        }
+
+        guard response.echoedTestID == testID else {
+            throw E2EError.assertionFailed("Test ID mismatch in reverse ping")
+        }
+
+        guard reversePingReceived else {
+            throw E2EError.assertionFailed("iOS did not receive reverse ping from watchOS")
+        }
+
+        print("[E2E] Bidirectional communication verified: watchOS successfully sent request to iOS")
+    }
+
+    private func testMultipleSharedStateMulticast() async throws {
+        // Test that multiple SharedState instances all receive applicationContext updates
+        let testValueA = Int.random(in: 10000...99999)
+        let testValueB = "test-\(UUID().uuidString.prefix(8))"
+
+        // Update both shared states on iOS side
+        print("[E2E] Updating SharedStateA with value: \(testValueA)")
+        try sharedStateA.update(E2ETestStateA(value: testValueA))
+
+        print("[E2E] Updating SharedStateB with value: \(testValueB)")
+        try sharedStateB.update(E2ETestStateB(value: testValueB))
+
+        // Give time for applicationContext to sync
+        try await Task.sleep(for: .seconds(2))
+
+        // Ask watchOS to verify it received both updates
+        print("[E2E] Verifying watchOS received both SharedState updates...")
+        let response = try await connection.sendWhenReady(
+            E2EVerifyMulticastRequest(expectedStateAValue: testValueA, expectedStateBValue: testValueB),
+            maxAttempts: 5,
+            connectionTimeout: .seconds(15)
+        )
+
+        guard response.stateAMatches else {
+            throw E2EError.assertionFailed("SharedStateA mismatch: expected \(testValueA), got \(response.actualStateAValue)")
+        }
+
+        guard response.stateBMatches else {
+            throw E2EError.assertionFailed("SharedStateB mismatch: expected \(testValueB), got \(response.actualStateBValue)")
+        }
+
+        print("[E2E] Multiple SharedState multicast verified: both states received on watchOS")
+    }
 }
 
 enum E2EError: Error, LocalizedError {
@@ -267,19 +400,26 @@ enum E2EError: Error, LocalizedError {
 final class E2ETestResponder: ObservableObject {
     private let connection: WatchConnection
     private let sharedState: SharedState<E2ETestState>
+    private let sharedStateA: SharedState<E2ETestStateA>
+    private let sharedStateB: SharedState<E2ETestStateB>
 
     @Published private(set) var pingCount: Int = 0
     @Published private(set) var stateUpdateCount: Int = 0
     @Published private(set) var fireAndForgetCount: Int = 0
     @Published private(set) var recipeRequestCount: Int = 0
+    @Published private(set) var reversePingCount: Int = 0
+    @Published private(set) var multicastVerifyCount: Int = 0
 
     var totalRequestCount: Int {
-        pingCount + stateUpdateCount + fireAndForgetCount + recipeRequestCount
+        pingCount + stateUpdateCount + fireAndForgetCount + recipeRequestCount + reversePingCount + multicastVerifyCount
     }
 
     init(connection: WatchConnection, sharedState: SharedState<E2ETestState>) {
         self.connection = connection
         self.sharedState = sharedState
+        // Create additional SharedState instances for multicast testing
+        self.sharedStateA = SharedState(initialValue: E2ETestStateA(), connection: connection)
+        self.sharedStateB = SharedState(initialValue: E2ETestStateB(), connection: connection)
         setupHandlers()
     }
 
@@ -324,6 +464,88 @@ final class E2ETestResponder: ObservableObject {
             print("[E2E Watch] Received FetchRecipesRequest")
             // Return empty for E2E test - just verifying the roundtrip works
             return [Recipe]()
+        }
+
+        // Handle reverse ping trigger - watchOS sends a ping to iOS
+        connection.register(E2ETriggerReversePingRequest.self) { [weak self] request in
+            print("[E2E Watch] Received trigger to send reverse ping to iOS")
+
+            // Capture connection early before any awaits
+            guard let self else {
+                return E2ETriggerReversePingResponse(
+                    success: false,
+                    echoedTestID: request.testID,
+                    errorMessage: "Self was nil"
+                )
+            }
+
+            let conn = self.connection
+
+            await MainActor.run { self.reversePingCount += 1 }
+
+            do {
+                // Send a ping from watchOS to iOS
+                let response = try await conn.sendWhenReady(
+                    E2EReversePingRequest(testID: request.testID, originPlatform: "watchOS"),
+                    maxAttempts: 3,
+                    connectionTimeout: .seconds(10)
+                )
+
+                guard response.responderPlatform == "iOS" else {
+                    return E2ETriggerReversePingResponse(
+                        success: false,
+                        echoedTestID: request.testID,
+                        errorMessage: "Unexpected responder: \(response.responderPlatform)"
+                    )
+                }
+
+                print("[E2E Watch] Successfully sent reverse ping to iOS and received response")
+                return E2ETriggerReversePingResponse(
+                    success: true,
+                    echoedTestID: response.echoedTestID,
+                    errorMessage: nil
+                )
+            } catch {
+                print("[E2E Watch] Reverse ping failed: \(error)")
+                return E2ETriggerReversePingResponse(
+                    success: false,
+                    echoedTestID: request.testID,
+                    errorMessage: error.localizedDescription
+                )
+            }
+        }
+
+        // Handle multicast verification - check that both SharedState instances received updates
+        connection.register(E2EVerifyMulticastRequest.self) { [weak self] request in
+            print("[E2E Watch] Received multicast verification request")
+
+            guard let self else {
+                return E2EVerifyMulticastResponse(
+                    stateAMatches: false,
+                    stateBMatches: false,
+                    actualStateAValue: -1,
+                    actualStateBValue: "error: self was nil"
+                )
+            }
+
+            // Capture shared state references before any await
+            let stateA = self.sharedStateA
+            let stateB = self.sharedStateB
+
+            await MainActor.run { self.multicastVerifyCount += 1 }
+
+            let actualA = await MainActor.run { stateA.value.value }
+            let actualB = await MainActor.run { stateB.value.value }
+
+            print("[E2E Watch] SharedStateA: expected \(request.expectedStateAValue), got \(actualA)")
+            print("[E2E Watch] SharedStateB: expected \(request.expectedStateBValue), got \(actualB)")
+
+            return E2EVerifyMulticastResponse(
+                stateAMatches: actualA == request.expectedStateAValue,
+                stateBMatches: actualB == request.expectedStateBValue,
+                actualStateAValue: actualA,
+                actualStateBValue: actualB
+            )
         }
     }
 }
