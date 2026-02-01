@@ -18,7 +18,8 @@ Built from the ground up for async/await:
 
 - **async/await**: All asynchronous operations use async/await
 - **@MainActor**: Public classes are main-actor isolated
-- **AsyncStream**: Diagnostic events and state changes use AsyncStream
+- **AsyncStream**: Diagnostic events and application context updates use AsyncStream
+- **Isolated deinit**: Uses Swift 6's `isolated deinit` for safe cleanup
 
 ### 3. Observable
 
@@ -26,6 +27,7 @@ Designed for SwiftUI integration:
 
 - **ObservableObject**: `WatchConnection` and `SharedState` are ObservableObjects
 - **@Published**: All observable state uses @Published properties
+- **@Observable**: `SharedState` uses Swift's Observation framework
 - **Reactive**: State changes automatically update the UI
 
 ## Core Components
@@ -47,21 +49,15 @@ Designed for SwiftUI integration:
 │  ┌─────────────────────────────────────────────────────────────┐│
 │  │                    Wire Protocol                            ││
 │  │  - WireRequest / WireResponse                               ││
-│  │  - WireApplicationContext                                   ││
 │  │  - WireUserInfo                                             ││
 │  └─────────────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
 │                      SharedState<T>                             │
-│  - Versioned state synchronization                              │
-│  - Conflict detection and resolution                            │
-│  - Change observation                                           │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐ │
-│  │   State     │  │  Conflict   │  │      State Change       │ │
-│  │   Version   │  │  Resolution │  │                         │ │
-│  └─────────────┘  └─────────────┘  └─────────────────────────┘ │
+│  - Simple state synchronization via applicationContext          │
+│  - Last-write-wins semantics (WCSession behavior)              │
+│  - @Observable for SwiftUI integration                          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -82,14 +78,13 @@ The central class that manages all watch connectivity operations.
    - Handles fire-and-forget messages
 
 3. **Reliability**
-   - Implements retry logic with exponential backoff
+   - Implements retry logic with fixed 200ms delay between attempts
    - Manages fallback delivery strategies
-   - Queues requests when offline
-   - Persists queue for crash recovery
+   - Queues requests when offline (in-memory)
 
 4. **Health Monitoring**
    - Tracks success/failure patterns
-   - Reports degraded/unhealthy states
+   - Reports healthy/unhealthy states
    - Supports recovery attempts
 
 ### Handler Registration
@@ -172,66 +167,56 @@ messageOnly:
 
 ## Retry Policy
 
-Retries use exponential backoff with jitter:
+Retries use a simple, predictable approach:
 
-```
-Attempt 0: immediate
-Attempt 1: initialDelay * multiplier^0 + jitter
-Attempt 2: initialDelay * multiplier^1 + jitter
-Attempt 3: initialDelay * multiplier^2 + jitter
-...
-```
+- Fixed 200ms delay between retry attempts
+- Configurable maximum attempts (default: 3)
+- Configurable overall timeout (default: 10 seconds)
 
-Jitter prevents thundering herd problems when multiple requests retry simultaneously.
+```swift
+// Built-in policies
+.default     // 3 attempts, 10s timeout
+.patient     // 5 attempts, 30s timeout
+.none        // 1 attempt, no retries
+
+// Custom policy
+RetryPolicy(maxAttempts: 4, timeout: .seconds(15))
+```
 
 ## SharedState
 
-`SharedState<T>` provides versioned, conflict-resolving state synchronization.
+`SharedState<T>` provides simple state synchronization via `applicationContext`.
 
-### State Versioning
+### Semantics
 
-Each state update includes:
+- **Last-write-wins**: If both devices update simultaneously, one wins arbitrarily
+- **No versioning**: The library doesn't track versions or sequence numbers
+- **No conflict resolution**: WCSession's native behavior is used directly
+- **Immediate sync**: Updates are sent immediately (WCSession coalesces internally)
 
-```swift
-struct StateVersion {
-    let sequenceNumber: UInt64  // Monotonically increasing per device
-    let timestamp: Date         // When update was created
-    let origin: DeviceOrigin    // .iOS or .watchOS
-    let updateID: UUID          // Unique identifier
-}
-```
+### Multicast Observation
 
-### Conflict Detection
-
-A conflict occurs when:
-1. Local device has pending updates (not yet acknowledged)
-2. Remote update arrives
-
-### Conflict Resolution
-
-The library provides built-in strategies:
+Multiple `SharedState` instances can observe the same `WatchConnection`:
 
 ```swift
-.latestWins          // Most recent timestamp wins
-.earliestWins        // Earliest timestamp wins
-.iOSWins             // iOS always wins
-.watchOSWins         // watchOS always wins
-.highestSequenceWins // Higher sequence number wins
-.custom { local, remote in ... } // Custom merge
+// All of these receive updates from the same connection
+let settingsState = SharedState(initialValue: Settings(), connection: connection)
+let profileState = SharedState(initialValue: Profile(), connection: connection)
+let statusState = SharedState(initialValue: Status(), connection: connection)
 ```
+
+This is implemented using `MulticastStream`, which broadcasts incoming application contexts to all subscribers.
 
 ## Health Tracking
 
 The `HealthTracker` monitors communication patterns:
 
 ```
-healthy → (3 consecutive failures) → degraded
-degraded → (success) → healthy
-degraded → (10 consecutive failures) → unhealthy
-unhealthy → (success) → healthy
+healthy → (5 consecutive failures) → unhealthy
+unhealthy → (any success) → healthy
 ```
 
-When unhealthy, the library recommends user intervention (e.g., restarting devices).
+When unhealthy, the library provides localized recovery suggestions to guide users.
 
 ## Thread Safety
 
@@ -258,16 +243,17 @@ nonisolated func session(_ session: WCSession, didReceiveMessageData data: Data)
 
 The library is designed for testability:
 
-1. **SessionProviding Protocol**: Abstracts WCSession for mocking
-2. **MockSession**: Configurable mock for unit tests
-3. **FlakySession**: Simulates unreliable connections
+1. **WCSessionProviding Protocol**: Abstracts WCSession for mocking
+2. **MockWCSession**: Configurable mock for unit tests
+3. **FlakyWCSession**: Simulates unreliable connections
+4. **PreviewWCSession**: For SwiftUI previews
 
 ```swift
 // Production
 let connection = WatchConnection(session: WCSession.default)
 
 // Testing
-let mock = MockSession()
+let mock = MockWCSession()
 mock.sendMessageError = WatchConnectionError.notReachable
 let connection = WatchConnection(session: mock)
 ```

@@ -194,12 +194,8 @@ try sharedContext.update(RecipeContext(
     favoriteRecipeIDs: ["456", "789"]
 ))
 
-// Observe changes
-Task {
-    for await newValue in sharedContext.values {
-        print("Context changed: \(newValue)")
-    }
-}
+// Read current value (observable via @Observable)
+let current = sharedContext.value
 ```
 
 ### 6. Add Retry Configuration (Optional)
@@ -229,7 +225,7 @@ v5.0.0 includes session health monitoring:
 Task {
     for await event in connection.diagnosticEvents {
         if case .healthChanged(_, let to) = event {
-            if to.requiresUserIntervention {
+            if !to.isHealthy {
                 showRecoveryPrompt()
             }
         }
@@ -237,7 +233,7 @@ Task {
 }
 
 // Or check directly
-if connection.sessionHealth.requiresUserIntervention {
+if !connection.sessionHealth.isHealthy {
     await connection.attemptRecovery()
 }
 ```

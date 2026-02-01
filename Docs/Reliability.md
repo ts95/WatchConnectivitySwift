@@ -14,59 +14,32 @@ Watch connectivity is inherently unreliable due to:
 
 The library addresses these issues through:
 
-1. **Connection Management** - Class-level connect/disconnect control
-2. **Connection State** - Reactive connection status observation
-3. **Waiting Utilities** - Wait for activation or connection
-4. **Retry Policies** - Automatic retry with exponential backoff
-5. **Delivery Strategies** - Fallback transport mechanisms
-6. **Health Monitoring** - Detect and recover from persistent issues
-7. **Recovery Suggestions** - User-facing guidance for connectivity issues
-8. **Request Queuing** - Persist requests during offline periods
+1. **Waiting Utilities** - Wait for activation or connection
+2. **Retry Policies** - Automatic retry with fixed delay
+3. **Delivery Strategies** - Fallback transport mechanisms
+4. **Health Monitoring** - Detect and recover from persistent issues
+5. **Recovery Suggestions** - User-facing guidance for connectivity issues
+6. **Request Queuing** - Queue requests during offline periods
 
-## Connection Management
+## Connection State
 
-### Connection Mode
+### Observing State
 
-Control whether the connection actively maintains connectivity:
+Use the `@Published` properties on `WatchConnection` to observe connection state:
 
 ```swift
-// Start actively maintaining connectivity
-await connection.connect()
-print(connection.connectionMode) // .active
+struct ConnectionStatusView: View {
+    @ObservedObject var connection: WatchConnection
 
-// Disconnect and cancel all pending requests
-connection.disconnect()
-print(connection.connectionMode) // .passive
-```
-
-In **active mode**:
-- Queued requests are processed as soon as connectivity is available
-- Diagnostic events are emitted for connection attempts
-
-In **passive mode** (default):
-- Connection only attempts to send when explicitly requested
-
-### Observing Connection State
-
-The `connectionState` stream emits the current status immediately on subscription:
-
-```swift
-for await status in connection.connectionState {
-    if status.canSendMessages {
-        // Ready for real-time messaging
-    } else if status.canUseBackgroundTransfers {
-        // Can use queued delivery
-    } else {
-        // Offline
+    var body: some View {
+        HStack {
+            Circle()
+                .fill(connection.isReachable ? Color.green : Color.red)
+                .frame(width: 10, height: 10)
+            Text(connection.isReachable ? "Connected" : "Disconnected")
+        }
     }
 }
-```
-
-For one-time checks:
-
-```swift
-let status = connection.currentConnectionStatus
-print(status.isActivated, status.isReachable)
 ```
 
 ### Waiting for Connection
@@ -245,37 +218,32 @@ Task {
 
 ```swift
 // Attempt automatic recovery
-if connection.sessionHealth.requiresUserIntervention {
+if !connection.sessionHealth.isHealthy {
     await connection.attemptRecovery()
 }
 
-// If still unhealthy, guide user
-if !connection.sessionHealth.isHealthy {
-    presentRecoveryInstructions()
-    // "Try restarting your Apple Watch and iPhone"
+// If still unhealthy, guide user with the recovery suggestion
+if case .unhealthy(let suggestion) = connection.sessionHealth {
+    showAlert(suggestion.localizedDescription)
 }
 ```
 
 ## Recovery Suggestions
 
-The library provides user-facing recovery suggestions based on session health:
+When the session becomes unhealthy, it includes a `RecoverySuggestion` that can be displayed to users:
 
 ```swift
-Task {
-    for await suggestion in connection.recoverySuggestions {
-        showAlert(
-            title: suggestion.title,
-            message: suggestion.message
-        )
+// Access suggestion when unhealthy
+if case .unhealthy(let suggestion) = connection.sessionHealth {
+    showAlert(suggestion.localizedDescription)
+}
 
-        // Check severity for UI treatment
-        switch suggestion.severity {
-        case .minor:
-            // Subtle indicator
-        case .moderate:
-            // Warning badge
-        case .major, .critical:
-            // Prominent alert
+// Or observe health changes via diagnostics
+Task {
+    for await event in connection.diagnosticEvents {
+        if case .healthChanged(_, let to) = event,
+           case .unhealthy(let suggestion) = to {
+            showAlert(suggestion.localizedDescription)
         }
     }
 }
@@ -283,15 +251,12 @@ Task {
 
 ### Available Suggestions
 
-| Suggestion | Severity | When Emitted |
-|------------|----------|--------------|
-| `bringDevicesCloser` | Minor | Intermittent connectivity |
-| `openCompanionApp` | Minor | App not reachable but paired |
-| `checkBluetoothEnabled` | Moderate | Bluetooth issues suspected |
-| `restartWatch` | Major | Persistent session failures |
-| `repairDevices` | Critical | After other recovery fails |
+| Suggestion | Description |
+|------------|-------------|
+| `openCompanionApp` | Ask user to open the app on the counterpart device |
+| `restartWatch` | Ask user to restart their Apple Watch |
 
-Suggestions are deduplicated with a 30-second window to avoid spamming users.
+Suggestions use Swift's String Catalogs for localization.
 
 ## Diagnostic Events
 
@@ -361,16 +326,7 @@ connection.cancelQueuedRequest(id: requestID)
 
 1. **Automatic queueing**: Requests are queued when offline (depending on delivery mode)
 2. **Automatic flush**: Queued requests are sent when connectivity is restored
-3. **Persistence**: Queue survives app termination (within limits)
-4. **Expiration**: Old requests expire after 1 hour
-
-### Queue Configuration
-
-The queue has sensible defaults:
-
-- Maximum 100 queued requests
-- Requests expire after 1 hour
-- Oldest requests are dropped if queue is full
+3. **In-memory**: Queue is held in memory (not persisted across app termination)
 
 ## Best Practices
 
@@ -416,13 +372,8 @@ struct ConnectionStatusView: View {
     @ObservedObject var connection: WatchConnection
 
     var body: some View {
-        switch connection.sessionHealth {
-        case .healthy:
-            EmptyView()
-        case .degraded:
-            WarningBanner("Connection unstable")
-        case .unhealthy:
-            ErrorBanner("Connection lost") {
+        if case .unhealthy(let suggestion) = connection.sessionHealth {
+            ErrorBanner(suggestion.localizedDescription) {
                 Task { await connection.attemptRecovery() }
             }
         }
@@ -443,11 +394,11 @@ struct LogEvent: FireAndForgetRequest {
 await connection.send(LogEvent(name: "screen_view", parameters: [:]))
 ```
 
-### 5. Test with FlakySession
+### 5. Test with FlakyWCSession
 
 ```swift
 // Simulate unreliable connection
-let flakySession = FlakySession()
+let flakySession = FlakyWCSession()
 flakySession.failureProbability = 0.3  // 30% failure rate
 let connection = WatchConnection(session: flakySession)
 

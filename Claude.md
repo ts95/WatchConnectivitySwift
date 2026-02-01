@@ -66,7 +66,7 @@ Note: This library uses WatchConnectivity which is only available on iOS and wat
 Sources/WatchConnectivitySwift/
 ├── WatchConnection.swift         # Main entry point, handles all communication
 ├── WatchRequest.swift            # Protocol definitions for type-safe requests
-├── SessionProviding.swift        # Protocol for WCSession abstraction (testability)
+├── WCSessionProviding.swift      # Protocol for WCSession abstraction (testability)
 ├── FileTransfer.swift            # File transfer tracking and received files
 ├── DeliveryStrategy.swift        # Message delivery strategies with fallbacks
 ├── DeliveryMode.swift            # Delivery timing modes
@@ -82,7 +82,7 @@ Sources/WatchConnectivitySwift/
 ├── Internal/
 │   └── WireProtocol.swift        # Wire format for messages
 └── Testing/
-    └── PreviewSession.swift      # Public mock session for SwiftUI previews
+    └── PreviewWCSession.swift    # Public mock session for SwiftUI previews
 
 Tests/WatchConnectivitySwiftTests/
 ├── WatchConnectionTests.swift    # Main connection tests
@@ -91,8 +91,8 @@ Tests/WatchConnectivitySwiftTests/
 ├── DeliveryStrategyTests.swift   # Delivery strategy tests
 ├── WatchConnectivitySwiftTests.swift  # Error and delivery mode tests
 └── Mocks/
-    ├── MockSession.swift         # Mock WCSession for testing
-    └── FlakySession.swift        # Simulated unreliable session for reliability tests
+    ├── MockWCSession.swift       # Mock WCSession for testing
+    └── FlakyWCSession.swift      # Simulated unreliable session for reliability tests
 ```
 
 ## Architecture
@@ -117,6 +117,31 @@ Tests/WatchConnectivitySwiftTests/
 - **Protocol with associated types**: `WatchRequest` uses associated `Response` type for type safety
 - **Delegate-first design**: Data flows through WCSession delegate methods, not KVO (except for `isReachable`)
 - **Swift 6 strict concurrency**: Full `Sendable` compliance, `@preconcurrency import WatchConnectivity`
+- **Isolated deinit**: Uses Swift 6's `isolated deinit` feature for safe cleanup in `@MainActor` classes
+
+## Swift 6 Concurrency Notes
+
+### Isolated Deinit (SE-0371)
+
+Swift 6 introduced `isolated deinit` which allows deinitializers to run in the actor's isolation context. This is used in `SharedState` to safely cancel observation tasks:
+
+```swift
+@MainActor
+public final class SharedState<State> {
+    private var observationTask: Task<Void, Never>?
+
+    isolated deinit {
+        observationTask?.cancel()  // Safe - runs on MainActor
+    }
+}
+```
+
+Before `isolated deinit`, accessing `@MainActor`-isolated properties in `deinit` was unsafe because `deinit` was always nonisolated. With `isolated deinit`, the deinitializer runs on the actor's executor, making it safe to access isolated state.
+
+**Key points:**
+- Use `isolated deinit` when you need to access actor-isolated properties during cleanup
+- The deinitializer will be scheduled on the actor's executor if not already there
+- Introduced in Swift 6.1 (SE-0371)
 
 ## Platform Requirements
 
@@ -141,8 +166,8 @@ No external dependencies. Uses Foundation, WatchConnectivity, and Combine.
 
 Tests use Swift Testing framework (`@Test`, `@Suite`, `#expect`). Mock classes:
 
-- `MockSession`: Configurable mock for unit tests
-- `FlakySession`: Simulates unreliable connections for reliability testing
+- `MockWCSession`: Configurable mock for unit tests
+- `FlakyWCSession`: Simulates unreliable connections for reliability testing
 
 Run tests in Xcode with iOS Simulator target.
 

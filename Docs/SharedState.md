@@ -17,6 +17,7 @@ Key features:
 - **@Observable**: Uses Swift's Observation framework for seamless nested observation
 - **Persistence**: Survives app termination (via applicationContext)
 - **SwiftUI ready**: Works with both `@Observable` view models and legacy `ObservableObject`
+- **Simple semantics**: Last-write-wins, no versioning complexity
 
 ## Basic Usage
 
@@ -70,8 +71,10 @@ try settingsManager.settings.update(
 
 ### 4. Observe Changes
 
+Changes to `SharedState.value` are automatically observable via Swift's Observation framework:
+
 ```swift
-// SwiftUI - automatic via @Published
+// SwiftUI - automatic observation
 struct SettingsView: View {
     @ObservedObject var manager: SettingsManager
 
@@ -86,13 +89,6 @@ struct SettingsView: View {
         ))
     }
 }
-
-// Programmatic observation via AsyncStream
-Task {
-    for await newValue in settingsManager.settings.values {
-        print("Settings changed: \(newValue)")
-    }
-}
 ```
 
 ## How Sync Works
@@ -104,17 +100,7 @@ Task {
 3. The counterpart device receives it via the WCSession delegate
 4. Both devices now have the same value
 
-**Important**: Only the latest value is synced. If you update multiple times before the counterpart receives an update, only the final value is delivered.
-
-## Rate Limiting
-
-`SharedState` rate-limits `updateApplicationContext` calls to avoid interfering with `sendMessage`. Updates are:
-
-- Coalesced if they occur within 5 seconds of each other
-- Only the final value in a burst of updates is sent
-- Sent in a background task to avoid blocking the main thread
-
-This means if you rapidly update settings (e.g., user dragging a slider), only the final position is synced.
+**Important**: Only the latest value is synced. If you update multiple times before the counterpart receives an update, only the final value is delivered. This is WCSession's built-in behavior.
 
 ## SwiftUI Integration
 
@@ -266,9 +252,8 @@ let response = try await connection.send(UpdateSettingsRequest(settings: newSett
 ## Limitations
 
 1. **Size limits**: ApplicationContext has size limits (~250KB). Keep state small.
-2. **Last-write-wins**: If both devices update simultaneously, one update will be overwritten.
+2. **Last-write-wins**: If both devices update simultaneously, one update will be overwritten. There is no conflict resolution.
 3. **Single value**: ApplicationContext stores only the latest value (no history).
 4. **No partial updates**: The entire state is replaced on each update.
-5. **Rate limited**: Rapid updates are coalesced to avoid WCSession issues.
 
 For large or complex data, consider using request/response patterns instead.

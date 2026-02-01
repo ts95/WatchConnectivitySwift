@@ -16,7 +16,7 @@ Complete reference documentation for all public types, properties, and methods i
 - [WatchConnectionError](#watchconnectionerror)
 - [SessionHealth](#sessionhealth)
 - [DiagnosticEvent](#diagnosticevent)
-- [SessionProviding Protocol](#sessionproviding-protocol)
+- [WCSessionProviding Protocol](#wcsessionproviding-protocol)
 
 ---
 
@@ -33,7 +33,7 @@ public final class WatchConnection: NSObject, ObservableObject
 
 ```swift
 public init(
-    session: any SessionProviding = WCSession.default,
+    session: any WCSessionProviding = WCSession.default,
     encoder: JSONEncoder = JSONEncoder(),
     decoder: JSONDecoder = JSONDecoder()
 )
@@ -53,7 +53,6 @@ public init(
 | `pendingRequestCount` | `Int` | Number of queued requests |
 | `activeFileTransferCount` | `Int` | Number of file transfers in progress |
 | `sessionHealth` | `SessionHealth` | Current health state |
-| `connectionMode` | `ConnectionMode` | Current connection mode (read-only) |
 | `isPaired` | `Bool` | Whether Watch is paired (iOS only) |
 | `isWatchAppInstalled` | `Bool` | Whether Watch app is installed (iOS only) |
 
@@ -62,11 +61,10 @@ public init(
 | Property | Type | Description |
 |----------|------|-------------|
 | `diagnosticEvents` | `AsyncStream<DiagnosticEvent>` | Stream of diagnostic events |
-| `connectionState` | `AsyncStream<ConnectionStatus>` | Stream of connection status (emits current immediately) |
-| `currentConnectionStatus` | `ConnectionStatus` | Current connection status snapshot |
-| `recoverySuggestions` | `AsyncStream<RecoverySuggestion>` | Stream of recovery suggestions |
 | `receivedFiles` | `AsyncStream<ReceivedFile>` | Stream of received files |
+| `receivedApplicationContexts` | `AsyncStream<[String: Any]>` | Stream of received application contexts |
 | `outstandingFileTransfers` | `[FileTransfer]` | In-progress file transfers |
+| `session` | `any WCSessionProviding` | The underlying session for direct access |
 
 ### Callback Properties
 
@@ -327,17 +325,11 @@ public init(
 - `encoder`: JSON encoder for serializing state.
 - `decoder`: JSON decoder for deserializing state.
 
-### Published Properties
+### Properties
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `value` | `State` | Current state value |
-
-### Computed Properties
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `values` | `AsyncStream<State>` | Stream of state values (emits current immediately, then updates) |
+| `value` | `State` | Current state value (observable via `@Observable`) |
 
 ### Methods
 
@@ -350,8 +342,6 @@ public func update(_ newValue: State) throws
 ```
 
 **Throws:** `WatchConnectionError.encodingFailed` if serialization fails.
-
-**Note:** Updates are rate-limited to avoid interfering with `sendMessage`. Rapid updates are coalesced.
 
 ---
 
@@ -431,8 +421,7 @@ transfer.cancel()
 A file received from the counterpart device.
 
 ```swift
-@MainActor
-public struct ReceivedFile
+public struct ReceivedFile: @unchecked Sendable
 ```
 
 ### Properties
@@ -673,12 +662,12 @@ public enum DiagnosticEvent: Sendable
 
 ---
 
-## SessionProviding Protocol
+## WCSessionProviding Protocol
 
 Protocol for WCSession abstraction (for testing).
 
 ```swift
-public protocol SessionProviding: AnyObject
+public protocol WCSessionProviding: AnyObject, Sendable
 ```
 
 ### Required Properties
@@ -709,8 +698,8 @@ public protocol SessionProviding: AnyObject
 ### Conforming Types
 
 - `WCSession` (via extension)
-- `MockSession` (for testing)
-- `FlakySession` (for reliability testing)
+- `MockWCSession` (for testing)
+- `FlakyWCSession` (for reliability testing)
 
 ---
 
@@ -735,35 +724,6 @@ public enum DeliveryMethod: String, Sendable, Hashable, Codable {
     case message   // sendMessageData
     case userInfo  // transferUserInfo
     case context   // applicationContext
-}
-```
-
-### ConnectionStatus
-
-A snapshot of the current connection state.
-
-```swift
-public struct ConnectionStatus: Sendable, Equatable, Hashable {
-    public let isActivated: Bool
-    public let isReachable: Bool
-    #if os(iOS)
-    public let isPaired: Bool
-    public let isWatchAppInstalled: Bool
-    #endif
-
-    public var canSendMessages: Bool
-    public var canUseBackgroundTransfers: Bool
-}
-```
-
-### ConnectionMode
-
-Controls whether the connection actively maintains connectivity.
-
-```swift
-public enum ConnectionMode: String, Sendable, Equatable, Hashable {
-    case active   // Actively tries to connect and stay connected
-    case passive  // Default, only connects when explicitly sending
 }
 ```
 

@@ -235,7 +235,7 @@ RetryPolicy(maxAttempts: 4, timeout: .seconds(15))
 
 ### Shared State
 
-Synchronize state between devices. `SharedState` uses `applicationContext` under the hood, which automatically syncs the latest value to the counterpart device. The library rate-limits updates to avoid interfering with `sendMessage` (see WCSession notes in CLAUDE.md).
+Synchronize state between devices. `SharedState` uses `applicationContext` under the hood, which automatically syncs the latest value to the counterpart device.
 
 ```swift
 // 📁 Shared/AppSettings.swift
@@ -447,7 +447,7 @@ Comprehensive documentation is available in the [Docs](Docs/) folder:
 - **[Architecture Overview](Docs/Architecture.md)** - Design and internals
 - **[API Reference](Docs/API-Reference.md)** - Complete API documentation
 - **[Reliability Features](Docs/Reliability.md)** - Retries, health monitoring, queuing
-- **[Shared State](Docs/SharedState.md)** - State synchronization and conflict resolution
+- **[Shared State](Docs/SharedState.md)** - State synchronization between devices
 - **[Migration Guide](Docs/Migration-Guide.md)** - Upgrading from v1.x
 
 ---
@@ -465,7 +465,7 @@ Key changes:
 | Completion handlers | `async/await` |
 | Dictionary-based messages | Type-safe Codable requests |
 | Manual retry logic | Built-in `RetryPolicy` |
-| No state versioning | `SharedState` for automatic sync |
+| Manual state sync | `SharedState` for automatic sync |
 
 ---
 
@@ -475,12 +475,12 @@ The library is designed for testability. You can inject a mock session to test y
 
 ```swift
 // 📁 Tests/MyAppTests.swift
-// 💡 Use MockSession in your unit tests to simulate Watch/iPhone communication
+// 💡 Use MockWCSession in your unit tests to simulate Watch/iPhone communication
 
 import WatchConnectivitySwift
 
 // Create a mock session instead of a real WCSession
-let mockSession = MockSession()
+let mockSession = MockWCSession()
 let connection = WatchConnection(session: mockSession)
 
 // Configure the mock to return a specific response
@@ -514,7 +514,7 @@ The Demo app includes an end-to-end test harness for verifying real iOS-watchOS 
 - First launch after simulator erase requires extra warm-up time
 - Some failures require rebooting the watch simulator to resolve
 
-These tests are intended for manual verification and debugging, not CI automation. The unit tests with `MockSession` provide reliable, deterministic testing.
+These tests are intended for manual verification and debugging, not CI automation. The unit tests with `MockWCSession` provide reliable, deterministic testing.
 
 ---
 
