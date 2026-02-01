@@ -54,7 +54,7 @@ final class RecipeViewModel: ObservableObject {
     /// - Parameters:
     ///   - session: The session to use for communication.
     ///   - recipes: Optional recipes to pre-populate (for previews).
-    init(session: any SessionProviding, recipes: [Recipe] = []) {
+    init(session: any WCSessionProviding, recipes: [Recipe] = []) {
         self.connection = WatchConnection(session: session)
         self.recipes = recipes
 

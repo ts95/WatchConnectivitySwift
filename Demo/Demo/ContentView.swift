@@ -186,25 +186,25 @@ struct SharedPreferencesView: View {
 // MARK: - Previews
 
 #Preview("Connected") {
-    let session = PreviewSession.connected
+    let session = PreviewWCSession.connected
     let coordinator = AppCoordinator(session: session)
     return ContentView(coordinator: coordinator)
 }
 
 #Preview("Disconnected") {
-    let session = PreviewSession.disconnected
+    let session = PreviewWCSession.disconnected
     let coordinator = AppCoordinator(session: session)
     return ContentView(coordinator: coordinator)
 }
 
 #Preview("Unpaired") {
-    let session = PreviewSession.unpaired
+    let session = PreviewWCSession.unpaired
     let coordinator = AppCoordinator(session: session)
     return ContentView(coordinator: coordinator)
 }
 
 #Preview("With Events") {
-    let session = PreviewSession.connected
+    let session = PreviewWCSession.connected
     let events = [
         AnalyticsEvent(name: "recipe_viewed", parameters: ["recipe_id": "1"]),
         AnalyticsEvent(name: "recipe_favorited", parameters: ["recipe_id": "2"])

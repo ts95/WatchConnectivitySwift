@@ -204,19 +204,19 @@ struct ErrorView: View {
 // MARK: - Previews
 
 #Preview("With Recipes") {
-    let session = PreviewSession.connected
+    let session = PreviewWCSession.connected
     let viewModel = RecipeViewModel(session: session, recipes: Recipe.samples)
     return ContentView(viewModel: viewModel)
 }
 
 #Preview("Disconnected") {
-    let session = PreviewSession.disconnected
+    let session = PreviewWCSession.disconnected
     let viewModel = RecipeViewModel(session: session, recipes: Recipe.samples)
     return ContentView(viewModel: viewModel)
 }
 
 #Preview("Loading") {
-    let session = PreviewSession.connected
+    let session = PreviewWCSession.connected
     let viewModel = RecipeViewModel(session: session, recipes: [])
     return ContentView(viewModel: viewModel)
 }
@@ -224,7 +224,7 @@ struct ErrorView: View {
 #Preview("Recipe Detail") {
     RecipeDetailView(
         recipe: Recipe.samples[0],
-        viewModel: RecipeViewModel(session: PreviewSession.connected, recipes: Recipe.samples)
+        viewModel: RecipeViewModel(session: PreviewWCSession.connected, recipes: Recipe.samples)
     )
 }
 

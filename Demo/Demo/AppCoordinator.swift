@@ -65,7 +65,7 @@ final class AppCoordinator: ObservableObject {
     ///   - recipes: Optional recipes to use instead of loading from persistence.
     ///   - recentEvents: Optional recent events to display.
     init(
-        session: any SessionProviding,
+        session: any WCSessionProviding,
         recipes: [Recipe] = Recipe.samples,
         recentEvents: [AnalyticsEvent] = []
     ) {
