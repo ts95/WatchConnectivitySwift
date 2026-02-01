@@ -1,5 +1,5 @@
 //
-//  PreviewSession.swift
+//  PreviewWCSession.swift
 //  WatchConnectivitySwift
 //
 //  A mock session for SwiftUI previews and testing.
@@ -8,7 +8,7 @@
 import Foundation
 @preconcurrency import WatchConnectivity
 
-/// A mock implementation of `SessionProviding` for SwiftUI previews and testing.
+/// A mock implementation of `WCSessionProviding` for SwiftUI previews and testing.
 ///
 /// Use this class to create a `WatchConnection` that doesn't require actual
 /// Watch connectivity, making it perfect for SwiftUI previews and unit tests.
@@ -26,7 +26,7 @@ import Foundation
 ///
 /// #Preview {
 ///     // Create a preview session with custom state
-///     let previewSession = PreviewSession()
+///     let previewSession = PreviewWCSession()
 ///     previewSession.isReachable = true
 ///     previewSession.isPaired = true
 ///
@@ -43,7 +43,7 @@ import Foundation
 ///
 /// ```swift
 /// @Test func testSendRequest() async throws {
-///     let session = PreviewSession()
+///     let session = PreviewWCSession()
 ///     session.isReachable = true
 ///
 ///     // Configure mock response
@@ -56,7 +56,7 @@ import Foundation
 ///     #expect(result.name == "Test")
 /// }
 /// ```
-public final class PreviewSession: SessionProviding, @unchecked Sendable {
+public final class PreviewWCSession: WCSessionProviding, @unchecked Sendable {
 
     // MARK: - Session State
 
@@ -114,8 +114,8 @@ public final class PreviewSession: SessionProviding, @unchecked Sendable {
     public init() {}
 
     /// Creates a preview session configured for a connected state.
-    public static var connected: PreviewSession {
-        let session = PreviewSession()
+    public static var connected: PreviewWCSession {
+        let session = PreviewWCSession()
         session.activationState = .activated
         session.isReachable = true
         #if os(iOS)
@@ -126,8 +126,8 @@ public final class PreviewSession: SessionProviding, @unchecked Sendable {
     }
 
     /// Creates a preview session configured for a disconnected state.
-    public static var disconnected: PreviewSession {
-        let session = PreviewSession()
+    public static var disconnected: PreviewWCSession {
+        let session = PreviewWCSession()
         session.activationState = .activated
         session.isReachable = false
         #if os(iOS)
@@ -139,8 +139,8 @@ public final class PreviewSession: SessionProviding, @unchecked Sendable {
 
     /// Creates a preview session configured for an unpaired state (iOS only).
     #if os(iOS)
-    public static var unpaired: PreviewSession {
-        let session = PreviewSession()
+    public static var unpaired: PreviewWCSession {
+        let session = PreviewWCSession()
         session.activationState = .activated
         session.isReachable = false
         session.isPaired = false
@@ -168,7 +168,7 @@ public final class PreviewSession: SessionProviding, @unchecked Sendable {
         mockResponses.removeAll()
     }
 
-    // MARK: - SessionProviding Implementation
+    // MARK: - WCSessionProviding Implementation
 
     public func activate() {
         // Simulate activation completion

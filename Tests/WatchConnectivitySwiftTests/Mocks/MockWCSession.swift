@@ -1,5 +1,5 @@
 //
-//  MockSession.swift
+//  MockWCSession.swift
 //  WatchConnectivitySwift
 //
 
@@ -7,11 +7,11 @@ import Foundation
 import WatchConnectivity
 @testable import WatchConnectivitySwift
 
-/// A mock implementation of SessionProviding for testing.
+/// A mock implementation of WCSessionProviding for testing.
 ///
 /// This mock allows you to control session behavior and verify interactions
 /// in unit tests without requiring actual WatchConnectivity.
-final class MockSession: SessionProviding, @unchecked Sendable {
+final class MockWCSession: WCSessionProviding, @unchecked Sendable {
 
     // MARK: - State Properties
 

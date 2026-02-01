@@ -1,5 +1,5 @@
 //
-//  SessionProviding.swift
+//  WCSessionProviding.swift
 //  WatchConnectivitySwift
 //
 
@@ -16,7 +16,7 @@ import WatchConnectivity
 ///
 /// ## Thread Safety
 ///
-/// `SessionProviding` requires `Sendable` conformance because WCSession methods
+/// `WCSessionProviding` requires `Sendable` conformance because WCSession methods
 /// are thread-safe and may be called from any thread. The library uses this to
 /// perform blocking operations like `updateApplicationContext()` off the main thread.
 ///
@@ -27,10 +27,10 @@ import WatchConnectivity
 /// let connection = WatchConnection(session: WCSession.default)
 ///
 /// // Test usage
-/// let mockSession = MockSession()
+/// let mockSession = MockWCSession()
 /// let connection = WatchConnection(session: mockSession)
 /// ```
-public protocol SessionProviding: AnyObject, Sendable {
+public protocol WCSessionProviding: AnyObject, Sendable {
 
     // MARK: - State Properties
 
@@ -111,6 +111,6 @@ public protocol SessionProviding: AnyObject, Sendable {
 
 // WCSession is thread-safe (delegate methods are called on arbitrary queues,
 // and methods like updateApplicationContext can be called from any thread).
-// Apple hasn't marked it as Sendable, so we use @unchecked.
-extension WCSession: @unchecked Sendable {}
-extension WCSession: SessionProviding {}
+// Apple hasn't marked it as Sendable, so we use @retroactive @unchecked.
+extension WCSession: @retroactive @unchecked Sendable {}
+extension WCSession: WCSessionProviding {}

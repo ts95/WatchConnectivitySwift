@@ -1,5 +1,5 @@
 //
-//  FlakySession.swift
+//  FlakyWCSession.swift
 //  WatchConnectivitySwift
 //
 
@@ -11,7 +11,7 @@ import WatchConnectivity
 ///
 /// This mock simulates the unreliable behavior of WCSession to test
 /// that the library's reliability features work correctly.
-final class FlakySession: SessionProviding, @unchecked Sendable {
+final class FlakyWCSession: WCSessionProviding, @unchecked Sendable {
 
     // MARK: - Flakiness Configuration
 
