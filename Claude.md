@@ -4,7 +4,7 @@ A Swift library that simplifies communication between iOS and watchOS apps using
 
 ## Current Version
 
-**Version: 5.0.0**
+**Version: 5.1.0**
 
 ## Version Management
 
