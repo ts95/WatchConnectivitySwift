@@ -204,8 +204,11 @@ extension FileTransfer: Identifiable {}
 ///     print("Received file with metadata: \(file.metadata ?? [:])")
 /// }
 /// ```
-@MainActor
-public struct ReceivedFile {
+/// A file received from the counterpart device.
+///
+/// This struct is `@unchecked Sendable` because it only contains thread-safe
+/// property list types (URL and optional dictionary of property list values).
+public struct ReceivedFile: @unchecked Sendable {
 
     /// The URL of the received file.
     ///
@@ -219,6 +222,7 @@ public struct ReceivedFile {
     public let metadata: [String: Any]?
 
     /// Creates a received file from a WCSessionFile.
+    @MainActor
     internal init(wcFile: WCSessionFile) {
         self.fileURL = wcFile.fileURL
         self.metadata = wcFile.metadata

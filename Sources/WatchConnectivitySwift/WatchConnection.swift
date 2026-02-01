@@ -96,9 +96,7 @@ public final class WatchConnection: NSObject, ObservableObject {
     /// }
     /// ```
     public var receivedFiles: AsyncStream<ReceivedFile> {
-        AsyncStream { continuation in
-            self.receivedFilesContinuation = continuation
-        }
+        receivedFilesStream.makeStream()
     }
 
     // MARK: - Application Context Stream
@@ -119,8 +117,15 @@ public final class WatchConnection: NSObject, ObservableObject {
     /// }
     /// ```
     public var receivedApplicationContexts: AsyncStream<[String: Any]> {
-        AsyncStream { continuation in
-            self.receivedApplicationContextsContinuation = continuation
+        // Map the internal SendableContext stream to expose raw dictionaries
+        let stream = applicationContextStream.makeStream()
+        return AsyncStream { continuation in
+            Task { @MainActor in
+                for await context in stream {
+                    continuation.yield(context.value)
+                }
+                continuation.finish()
+            }
         }
     }
 
@@ -139,9 +144,7 @@ public final class WatchConnection: NSObject, ObservableObject {
     /// }
     /// ```
     public var diagnosticEvents: AsyncStream<DiagnosticEvent> {
-        AsyncStream { continuation in
-            self.diagnosticContinuation = continuation
-        }
+        diagnosticStream.makeStream()
     }
 
     // MARK: - Session Access
@@ -150,13 +153,13 @@ public final class WatchConnection: NSObject, ObservableObject {
     ///
     /// Use this to access session properties like `applicationContext` or
     /// `receivedApplicationContext` directly.
-    public var session: any SessionProviding {
+    public var session: any WCSessionProviding {
         _session
     }
 
     // MARK: - Private Properties
 
-    private let _session: any SessionProviding
+    private let _session: any WCSessionProviding
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
@@ -175,14 +178,15 @@ public final class WatchConnection: NSObject, ObservableObject {
     /// Health tracker for monitoring session health
     private let healthTracker = HealthTracker()
 
-    /// Continuation for emitting diagnostic events
-    private var diagnosticContinuation: AsyncStream<DiagnosticEvent>.Continuation?
+    /// Multicast stream for emitting diagnostic events to multiple subscribers
+    private let diagnosticStream = MulticastStream<DiagnosticEvent>()
 
-    /// Continuation for emitting received files
-    private var receivedFilesContinuation: AsyncStream<ReceivedFile>.Continuation?
+    /// Multicast stream for emitting received files to multiple subscribers
+    private let receivedFilesStream = MulticastStream<ReceivedFile>()
 
-    /// Continuation for emitting received application contexts
-    private var receivedApplicationContextsContinuation: AsyncStream<[String: Any]>.Continuation?
+    /// Multicast stream for emitting received application contexts to multiple subscribers
+    /// Uses SendableContext wrapper for Swift 6 strict concurrency compliance
+    private let applicationContextStream = MulticastStream<SendableContext>()
 
     /// KVO observations
     private var reachabilityObservation: NSKeyValueObservation?
@@ -203,7 +207,7 @@ public final class WatchConnection: NSObject, ObservableObject {
     ///   - encoder: JSON encoder for serializing requests. Defaults to a new encoder.
     ///   - decoder: JSON decoder for deserializing responses. Defaults to a new decoder.
     public init(
-        session: any SessionProviding = WCSession.default,
+        session: any WCSessionProviding = WCSession.default,
         encoder: JSONEncoder = JSONEncoder(),
         decoder: JSONDecoder = JSONDecoder()
     ) {
@@ -655,7 +659,7 @@ public final class WatchConnection: NSObject, ObservableObject {
 
     /// Emits a diagnostic event to subscribers.
     private func emitDiagnostic(_ event: DiagnosticEvent) {
-        diagnosticContinuation?.yield(event)
+        diagnosticStream.yield(event)
     }
 
     /// Updates the published sessionHealth from the health tracker.
@@ -1178,7 +1182,7 @@ extension WatchConnection: WCSessionDelegate {
             self.emitDiagnostic(.applicationContextReceived)
 
             // Yield to stream for SharedState and other observers
-            self.receivedApplicationContextsContinuation?.yield(sendableContext.value)
+            self.applicationContextStream.yield(sendableContext)
         }
 
         // Handle requests embedded in context
@@ -1214,7 +1218,7 @@ extension WatchConnection: WCSessionDelegate {
             self.onFileReceived?(receivedFile)
 
             // Emit to stream
-            self.receivedFilesContinuation?.yield(receivedFile)
+            self.receivedFilesStream.yield(receivedFile)
         }
     }
 
@@ -1283,5 +1287,45 @@ struct SendableContext: @unchecked Sendable {
 
     init(_ value: [String: Any]) {
         self.value = value
+    }
+}
+
+// MARK: - Multicast Stream
+
+/// A broadcast mechanism that supports multiple AsyncStream consumers.
+///
+/// Unlike a single AsyncStream.Continuation, this allows multiple subscribers
+/// to receive the same values. Each call to `makeStream()` returns a new
+/// AsyncStream that receives all future values.
+@MainActor
+final class MulticastStream<Element: Sendable> {
+    private var continuations: [UUID: AsyncStream<Element>.Continuation] = [:]
+
+    /// Creates a new AsyncStream that receives all values yielded to this multicast.
+    func makeStream() -> AsyncStream<Element> {
+        let id = UUID()
+        return AsyncStream { continuation in
+            self.continuations[id] = continuation
+            continuation.onTermination = { @Sendable [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.continuations.removeValue(forKey: id)
+                }
+            }
+        }
+    }
+
+    /// Yields a value to all active streams.
+    func yield(_ value: Element) {
+        for continuation in continuations.values {
+            continuation.yield(value)
+        }
+    }
+
+    /// Finishes all active streams.
+    func finish() {
+        for continuation in continuations.values {
+            continuation.finish()
+        }
+        continuations.removeAll()
     }
 }

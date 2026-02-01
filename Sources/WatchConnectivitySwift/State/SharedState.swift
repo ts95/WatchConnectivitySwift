@@ -60,7 +60,7 @@ public final class SharedState<State: Codable & Sendable & Equatable> {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     private let stateKey: String
-    private nonisolated(unsafe) var observationTask: Task<Void, Never>?
+    private var observationTask: Task<Void, Never>?
 
     // MARK: - Initialization
 
@@ -90,7 +90,7 @@ public final class SharedState<State: Codable & Sendable & Equatable> {
         startObserving()
     }
 
-    deinit {
+    isolated deinit {
         observationTask?.cancel()
     }
 
