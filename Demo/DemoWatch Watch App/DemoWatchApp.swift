@@ -37,6 +37,22 @@ struct DemoWatchApp: App {
 
 // MARK: - E2E Test View for watchOS
 
+struct RequestCountRow: View {
+    let label: String
+    let count: Int
+
+    var body: some View {
+        HStack {
+            Text(label)
+                .font(.caption2)
+            Spacer()
+            Text("\(count)")
+                .font(.caption2)
+                .bold()
+        }
+    }
+}
+
 struct WatchE2ETestView: View {
     @ObservedObject var responder: E2ETestResponder
     @ObservedObject var connection: WatchConnection
@@ -67,41 +83,12 @@ struct WatchE2ETestView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    HStack {
-                        Text("Pings:")
-                            .font(.caption2)
-                        Spacer()
-                        Text("\(responder.pingCount)")
-                            .font(.caption2)
-                            .bold()
-                    }
-
-                    HStack {
-                        Text("State Updates:")
-                            .font(.caption2)
-                        Spacer()
-                        Text("\(responder.stateUpdateCount)")
-                            .font(.caption2)
-                            .bold()
-                    }
-
-                    HStack {
-                        Text("Recipe Requests:")
-                            .font(.caption2)
-                        Spacer()
-                        Text("\(responder.recipeRequestCount)")
-                            .font(.caption2)
-                            .bold()
-                    }
-
-                    HStack {
-                        Text("Fire & Forget:")
-                            .font(.caption2)
-                        Spacer()
-                        Text("\(responder.fireAndForgetCount)")
-                            .font(.caption2)
-                            .bold()
-                    }
+                    RequestCountRow(label: "Pings:", count: responder.pingCount)
+                    RequestCountRow(label: "State Updates:", count: responder.stateUpdateCount)
+                    RequestCountRow(label: "Recipe Requests:", count: responder.recipeRequestCount)
+                    RequestCountRow(label: "Fire & Forget:", count: responder.fireAndForgetCount)
+                    RequestCountRow(label: "Reverse Pings:", count: responder.reversePingCount)
+                    RequestCountRow(label: "Multicast Verify:", count: responder.multicastVerifyCount)
                 }
 
                 Divider()
