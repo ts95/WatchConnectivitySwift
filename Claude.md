@@ -189,6 +189,7 @@ Important characteristics of Apple's WCSession that affect this library:
 - **`isReachable` may never return `true` in the simulator**, even when both simulators are paired and running.
 - Despite incorrect reachability status, `applicationContext` and `sendMessage` may still work.
 - There may be a small delay after app launch before the session becomes truly reachable.
+- **After `xcrun simctl erase`, WCSession may report `appInstalled: NO`** for the companion app even after re-pairing and re-installing. Multiple launch/wait cycles may be needed before the system recognizes the companion relationship. Rebooting the watch simulator or using `--no-clean` in the E2E test script can work around this.
 
 ### Reliability on Real Devices
 - WCSession can be unreliable on real devices—sometimes the watch is reachable, sometimes not.

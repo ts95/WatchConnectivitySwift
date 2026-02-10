@@ -512,6 +512,7 @@ The Demo app includes an end-to-end test harness for verifying real iOS-watchOS 
 - `isReachable` may never report `true` even when communication works
 - Timing is unpredictable; tests may pass or fail intermittently
 - First launch after simulator erase requires extra warm-up time
+- **After simulator erase, WCSession may report `appInstalled: NO`** for the companion app even after re-pairing and re-installing. The script retries automatically with increasing waits, but persistent failures may require rebooting the watch simulator (`xcrun simctl shutdown <UDID> && xcrun simctl boot <UDID>`) or using `--no-clean`
 - Some failures require rebooting the watch simulator to resolve
 
 These tests are intended for manual verification and debugging, not CI automation. The unit tests with `MockWCSession` provide reliable, deterministic testing.
