@@ -320,6 +320,92 @@ install_apps() {
     log_success "watchOS app installed"
 }
 
+# Verify companion app is recognized by WatchConnectivity after simulator erase
+# After erasing simulators, WCSession may report appInstalled: NO even after
+# re-pairing and re-installing. This function retries with increasing waits.
+verify_companion_app() {
+    if [ "$CLEAN_SIMULATORS" != true ]; then
+        log_info "Skipping companion app verification (--no-clean mode)"
+        return 0
+    fi
+
+    IOS_BUNDLE_ID="com.example.Demo"
+    WATCH_BUNDLE_ID="com.example.Demo.watchkitapp"
+    MAX_RETRIES=3
+    RETRY_WAITS=(15 25 40)
+
+    for ((attempt=1; attempt<=MAX_RETRIES; attempt++)); do
+        WAIT_TIME=${RETRY_WAITS[$((attempt-1))]}
+        log_info "Companion app verification attempt $attempt/$MAX_RETRIES (waiting ${WAIT_TIME}s)..."
+
+        # Launch both apps to trigger WCSession activation
+        xcrun simctl launch "$WATCH_UDID" "$WATCH_BUNDLE_ID" 2>/dev/null || true
+        sleep 1
+        xcrun simctl launch "$IOS_UDID" "$IOS_BUNDLE_ID" 2>/dev/null || true
+
+        log_info "Waiting ${WAIT_TIME}s for WatchConnectivity to register companion app..."
+        sleep "$WAIT_TIME"
+
+        # Check iOS simulator logs for appInstalled status
+        APP_INSTALLED_STATUS=$(xcrun simctl spawn "$IOS_UDID" log show --predicate 'subsystem == "com.apple.watchconnectivity"' --style compact --last 30s 2>/dev/null | grep -i "appInstalled" | tail -5 || echo "")
+        REACHABLE_STATUS=$(xcrun simctl spawn "$IOS_UDID" log show --predicate 'subsystem == "com.apple.watchconnectivity"' --style compact --last 30s 2>/dev/null | grep -i "reachable" | tail -5 || echo "")
+
+        log_info "=== WatchConnectivity Status ==="
+        if [ -n "$APP_INSTALLED_STATUS" ]; then
+            log_info "appInstalled entries:"
+            echo "$APP_INSTALLED_STATUS" | while IFS= read -r line; do
+                log_info "  $line"
+            done
+        else
+            log_warning "No appInstalled entries found in logs"
+        fi
+        if [ -n "$REACHABLE_STATUS" ]; then
+            log_info "reachable entries:"
+            echo "$REACHABLE_STATUS" | while IFS= read -r line; do
+                log_info "  $line"
+            done
+        else
+            log_warning "No reachable entries found in logs"
+        fi
+        log_info "================================"
+
+        # Check if appInstalled: YES appears (or no appInstalled: NO)
+        if echo "$APP_INSTALLED_STATUS" | grep -qi "appInstalled: YES" 2>/dev/null; then
+            log_success "Companion app is recognized (appInstalled: YES)"
+            # Terminate apps before returning
+            xcrun simctl terminate "$IOS_UDID" "$IOS_BUNDLE_ID" 2>/dev/null || true
+            xcrun simctl terminate "$WATCH_UDID" "$WATCH_BUNDLE_ID" 2>/dev/null || true
+            sleep 2
+            return 0
+        fi
+
+        # If no log entries at all, treat as inconclusive and continue
+        if [ -z "$APP_INSTALLED_STATUS" ]; then
+            log_warning "No appInstalled log entries found — continuing anyway"
+            xcrun simctl terminate "$IOS_UDID" "$IOS_BUNDLE_ID" 2>/dev/null || true
+            xcrun simctl terminate "$WATCH_UDID" "$WATCH_BUNDLE_ID" 2>/dev/null || true
+            sleep 2
+            return 0
+        fi
+
+        # appInstalled: NO detected — retry
+        log_warning "Companion app not yet recognized (appInstalled: NO), retrying..."
+        xcrun simctl terminate "$IOS_UDID" "$IOS_BUNDLE_ID" 2>/dev/null || true
+        xcrun simctl terminate "$WATCH_UDID" "$WATCH_BUNDLE_ID" 2>/dev/null || true
+        sleep 3
+    done
+
+    # All retries exhausted
+    log_error "Companion app still not recognized after $MAX_RETRIES attempts"
+    log_error ""
+    log_error "Manual recovery steps:"
+    log_error "  1. Reboot the watch simulator:  xcrun simctl shutdown $WATCH_UDID && xcrun simctl boot $WATCH_UDID"
+    log_error "  2. Or run with --no-clean to skip erasing:  ./Scripts/e2e-test.sh --no-clean"
+    log_error "  3. Or delete and recreate the simulators manually"
+    log_error ""
+    return 1
+}
+
 # Run the integration tests
 run_tests() {
     log_info "Running integration tests..."
@@ -344,7 +430,7 @@ run_tests() {
         sleep 1
         xcrun simctl launch "$IOS_UDID" "$IOS_BUNDLE_ID"
         log_info "Waiting for WatchConnectivity to initialize..."
-        sleep 5
+        sleep 15
         log_info "Terminating warmup instances..."
         xcrun simctl terminate "$IOS_UDID" "$IOS_BUNDLE_ID" 2>/dev/null || true
         xcrun simctl terminate "$WATCH_UDID" "$WATCH_BUNDLE_ID" 2>/dev/null || true
@@ -440,6 +526,7 @@ main() {
     boot_simulators
     build_apps
     install_apps
+    verify_companion_app
 
     TEST_RESULT=0
     run_tests || TEST_RESULT=$?
