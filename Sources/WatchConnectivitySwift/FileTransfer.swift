@@ -62,8 +62,8 @@ public final class FileTransfer: ObservableObject, Sendable {
     /// Progress observation.
     private var progressObservation: NSKeyValueObservation?
 
-    /// Continuation for progress streaming.
-    private var progressContinuation: AsyncStream<Double>.Continuation?
+    /// Multicast stream for progress updates, supporting multiple subscribers.
+    private let progressStream = MulticastStream<Double>()
 
     // MARK: - Initialization
 
@@ -88,9 +88,9 @@ public final class FileTransfer: ObservableObject, Sendable {
         }
     }
 
-    deinit {
+    isolated deinit {
         progressObservation?.invalidate()
-        progressContinuation?.finish()
+        progressStream.finish()
     }
 
     // MARK: - Public Methods
@@ -102,13 +102,17 @@ public final class FileTransfer: ObservableObject, Sendable {
         wcTransfer?.cancel()
         isTransferring = false
         error = .cancelled
+        progressObservation?.invalidate()
+        progressObservation = nil
         completionContinuation?.resume(throwing: WatchConnectionError.cancelled)
         completionContinuation = nil
-        progressContinuation?.finish()
+        progressStream.finish()
     }
 
     /// Waits for the transfer to complete.
     ///
+    /// - Important: Only one caller may await completion at a time.
+    ///   Calling this from multiple tasks concurrently is a programming error.
     /// - Throws: `WatchConnectionError` if the transfer fails.
     public func waitForCompletion() async throws {
         // Already completed
@@ -121,6 +125,9 @@ public final class FileTransfer: ObservableObject, Sendable {
             throw error
         }
 
+        precondition(completionContinuation == nil,
+                      "waitForCompletion() called while another caller is already waiting. Only one caller may await completion at a time.")
+
         // Wait for completion
         try await withCheckedThrowingContinuation { continuation in
             self.completionContinuation = continuation
@@ -130,16 +137,28 @@ public final class FileTransfer: ObservableObject, Sendable {
     /// An async stream of progress updates (0.0 to 1.0).
     ///
     /// The stream completes when the transfer finishes (successfully or with an error).
+    /// Multiple subscribers are supported — each receives all future progress values.
     public var progressUpdates: AsyncStream<Double> {
-        AsyncStream { continuation in
-            self.progressContinuation = continuation
-
-            // Emit current progress immediately
-            continuation.yield(self.fractionCompleted)
-
-            // Handle already completed
-            if !self.isTransferring {
+        // If already finished, return a stream with just the final state
+        if !isTransferring {
+            return AsyncStream { continuation in
+                continuation.yield(fractionCompleted)
                 continuation.finish()
+            }
+        }
+
+        // Emit current progress immediately, then forward all future values
+        let stream = progressStream.makeStream()
+        return AsyncStream { continuation in
+            continuation.yield(self.fractionCompleted)
+            let task = Task { @MainActor in
+                for await value in stream {
+                    continuation.yield(value)
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { @Sendable _ in
+                task.cancel()
             }
         }
     }
@@ -153,8 +172,8 @@ public final class FileTransfer: ObservableObject, Sendable {
         fractionCompleted = 1.0
         completionContinuation?.resume()
         completionContinuation = nil
-        progressContinuation?.yield(1.0)
-        progressContinuation?.finish()
+        progressStream.yield(1.0)
+        progressStream.finish()
     }
 
     /// Called when the transfer fails.
@@ -163,7 +182,7 @@ public final class FileTransfer: ObservableObject, Sendable {
         self.error = error
         completionContinuation?.resume(throwing: error)
         completionContinuation = nil
-        progressContinuation?.finish()
+        progressStream.finish()
     }
 
     // MARK: - Private Methods
@@ -173,7 +192,7 @@ public final class FileTransfer: ObservableObject, Sendable {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.fractionCompleted = progress.fractionCompleted
-                self.progressContinuation?.yield(progress.fractionCompleted)
+                self.progressStream.yield(progress.fractionCompleted)
             }
         }
 

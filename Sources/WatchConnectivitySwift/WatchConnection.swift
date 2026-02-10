@@ -120,11 +120,14 @@ public final class WatchConnection: NSObject, ObservableObject {
         // Map the internal SendableContext stream to expose raw dictionaries
         let stream = applicationContextStream.makeStream()
         return AsyncStream { continuation in
-            Task { @MainActor in
+            let task = Task { @MainActor in
                 for await context in stream {
                     continuation.yield(context.value)
                 }
                 continuation.finish()
+            }
+            continuation.onTermination = { @Sendable _ in
+                task.cancel()
             }
         }
     }
@@ -174,6 +177,9 @@ public final class WatchConnection: NSObject, ObservableObject {
 
     /// Active file transfers being tracked
     private var activeFileTransfers: [WCSessionFileTransfer: FileTransfer] = [:]
+
+    /// Timeout tasks for pending requests, keyed by request ID
+    private var timeoutTasks: [UUID: Task<Void, Never>] = [:]
 
     /// Health tracker for monitoring session health
     private let healthTracker = HealthTracker()
@@ -517,7 +523,9 @@ public final class WatchConnection: NSObject, ObservableObject {
     /// Queued requests will receive a `.cancelled` error.
     public func cancelAllQueuedRequests() {
         for queuedRequest in requestQueue {
-            if let continuation = pendingRequests.removeValue(forKey: queuedRequest.wireRequest.requestID) {
+            let requestID = queuedRequest.wireRequest.requestID
+            cancelTimeoutTask(for: requestID)
+            if let continuation = pendingRequests.removeValue(forKey: requestID) {
                 continuation.resume(throwing: WatchConnectionError.cancelled)
             }
         }
@@ -531,7 +539,9 @@ public final class WatchConnection: NSObject, ObservableObject {
     public func cancelQueuedRequest(id: UUID) {
         if let index = requestQueue.firstIndex(where: { $0.wireRequest.requestID == id }) {
             let queuedRequest = requestQueue.remove(at: index)
-            if let continuation = pendingRequests.removeValue(forKey: queuedRequest.wireRequest.requestID) {
+            let requestID = queuedRequest.wireRequest.requestID
+            cancelTimeoutTask(for: requestID)
+            if let continuation = pendingRequests.removeValue(forKey: requestID) {
                 continuation.resume(throwing: WatchConnectionError.cancelled)
             }
             pendingRequestCount = requestQueue.count
@@ -688,6 +698,11 @@ public final class WatchConnection: NSObject, ObservableObject {
         }
     }
 
+    /// Cancels and removes the timeout task for a given request ID.
+    private func cancelTimeoutTask(for requestID: UUID) {
+        timeoutTasks.removeValue(forKey: requestID)?.cancel()
+    }
+
     // MARK: - Private: Sending Implementation
 
     private func sendWithRetry(
@@ -802,15 +817,18 @@ public final class WatchConnection: NSObject, ObservableObject {
         }
 
         let requestData = try encoder.encode(wireRequest)
+        let requestID = wireRequest.requestID
 
         return try await withCheckedThrowingContinuation { continuation in
             // Store continuation for response
-            self.pendingRequests[wireRequest.requestID] = continuation
+            self.pendingRequests[requestID] = continuation
 
-            // Set up timeout
-            Task {
-                try await Task.sleep(for: timeout)
-                if let cont = self.pendingRequests.removeValue(forKey: wireRequest.requestID) {
+            // Set up timeout (store task so it can be cancelled on success/error)
+            self.timeoutTasks[requestID] = Task { [weak self] in
+                try? await Task.sleep(for: timeout)
+                guard !Task.isCancelled else { return }
+                if let cont = self?.pendingRequests.removeValue(forKey: requestID) {
+                    self?.timeoutTasks.removeValue(forKey: requestID)
                     cont.resume(throwing: WatchConnectionError.timeout)
                 }
             }
@@ -818,14 +836,17 @@ public final class WatchConnection: NSObject, ObservableObject {
             // Send message
             _session.sendMessageData(requestData, replyHandler: { [weak self] responseData in
                 Task { @MainActor in
-                    // Remove from pending and resume
-                    if let cont = self?.pendingRequests.removeValue(forKey: wireRequest.requestID) {
+                    guard let self else { return }
+                    if let cont = self.pendingRequests.removeValue(forKey: requestID) {
+                        self.cancelTimeoutTask(for: requestID)
                         cont.resume(returning: responseData)
                     }
                 }
             }, errorHandler: { [weak self] error in
                 Task { @MainActor in
-                    if let cont = self?.pendingRequests.removeValue(forKey: wireRequest.requestID) {
+                    guard let self else { return }
+                    if let cont = self.pendingRequests.removeValue(forKey: requestID) {
+                        self.cancelTimeoutTask(for: requestID)
                         cont.resume(throwing: WatchConnectionError(error: error))
                     }
                 }
@@ -847,15 +868,20 @@ public final class WatchConnection: NSObject, ObservableObject {
         requestQueue.append(queuedRequest)
         pendingRequestCount = requestQueue.count
 
-        return try await withCheckedThrowingContinuation { continuation in
-            self.pendingRequests[wireRequest.requestID] = continuation
+        let requestID = wireRequest.requestID
 
-            // Set up timeout
-            Task {
-                try await Task.sleep(for: timeout)
-                if let cont = self.pendingRequests.removeValue(forKey: wireRequest.requestID) {
+        return try await withCheckedThrowingContinuation { continuation in
+            self.pendingRequests[requestID] = continuation
+
+            // Set up timeout (store task so it can be cancelled on success/error)
+            self.timeoutTasks[requestID] = Task { [weak self] in
+                try? await Task.sleep(for: timeout)
+                guard !Task.isCancelled else { return }
+                guard let self else { return }
+                if let cont = self.pendingRequests.removeValue(forKey: requestID) {
+                    self.timeoutTasks.removeValue(forKey: requestID)
                     // Remove from queue
-                    self.requestQueue.removeAll { $0.wireRequest.requestID == wireRequest.requestID }
+                    self.requestQueue.removeAll { $0.wireRequest.requestID == requestID }
                     self.pendingRequestCount = self.requestQueue.count
                     cont.resume(throwing: WatchConnectionError.timeout)
                 }
@@ -866,7 +892,8 @@ public final class WatchConnection: NSObject, ObservableObject {
                 let userInfo = try WireUserInfo(request: wireRequest).toDictionary(encoder: self.encoder)
                 self._session.transferUserInfo(userInfo)
             } catch {
-                if let cont = self.pendingRequests.removeValue(forKey: wireRequest.requestID) {
+                if let cont = self.pendingRequests.removeValue(forKey: requestID) {
+                    self.cancelTimeoutTask(for: requestID)
                     cont.resume(throwing: WatchConnectionError(error: error))
                 }
             }
@@ -878,14 +905,17 @@ public final class WatchConnection: NSObject, ObservableObject {
         // This is a simplified implementation
 
         let requestData = try encoder.encode(wireRequest)
+        let requestID = wireRequest.requestID
 
         return try await withCheckedThrowingContinuation { continuation in
-            self.pendingRequests[wireRequest.requestID] = continuation
+            self.pendingRequests[requestID] = continuation
 
-            // Set up timeout
-            Task {
-                try await Task.sleep(for: timeout)
-                if let cont = self.pendingRequests.removeValue(forKey: wireRequest.requestID) {
+            // Set up timeout (store task so it can be cancelled on success/error)
+            self.timeoutTasks[requestID] = Task { [weak self] in
+                try? await Task.sleep(for: timeout)
+                guard !Task.isCancelled else { return }
+                if let cont = self?.pendingRequests.removeValue(forKey: requestID) {
+                    self?.timeoutTasks.removeValue(forKey: requestID)
                     cont.resume(throwing: WatchConnectionError.timeout)
                 }
             }
@@ -896,7 +926,8 @@ public final class WatchConnection: NSObject, ObservableObject {
                 context["WatchConnectivitySwift.Request"] = requestData
                 try self._session.updateApplicationContext(context)
             } catch {
-                if let cont = self.pendingRequests.removeValue(forKey: wireRequest.requestID) {
+                if let cont = self.pendingRequests.removeValue(forKey: requestID) {
+                    self.cancelTimeoutTask(for: requestID)
                     cont.resume(throwing: WatchConnectionError(error: error))
                 }
             }
@@ -978,23 +1009,44 @@ public final class WatchConnection: NSObject, ObservableObject {
 
             while !requestQueue.isEmpty && isReachable {
                 guard let queuedRequest = requestQueue.first else { break }
+                let requestID = queuedRequest.wireRequest.requestID
 
                 do {
-                    let responseData = try await sendViaMessage(
-                        wireRequest: queuedRequest.wireRequest,
-                        timeout: .seconds(10)
-                    )
+                    let requestData = try self.encoder.encode(queuedRequest.wireRequest)
 
-                    // Success - remove from queue and resume continuation
+                    // Send the message directly instead of calling sendViaMessage,
+                    // which would overwrite the existing pendingRequests continuation.
+                    try await withCheckedThrowingContinuation { (queueContinuation: CheckedContinuation<Void, any Error>) in
+                        self._session.sendMessageData(requestData, replyHandler: { [weak self] responseData in
+                            Task { @MainActor in
+                                guard let self else { return }
+                                // Resume the original caller's continuation (from sendViaUserInfo)
+                                if let callerContinuation = self.pendingRequests.removeValue(forKey: requestID) {
+                                    self.cancelTimeoutTask(for: requestID)
+                                    callerContinuation.resume(returning: responseData)
+                                }
+                                // Resume the queue processing continuation
+                                queueContinuation.resume()
+                            }
+                        }, errorHandler: { [weak self] error in
+                            Task { @MainActor in
+                                guard let self else { return }
+                                let watchError = WatchConnectionError(error: error)
+                                if let callerContinuation = self.pendingRequests.removeValue(forKey: requestID) {
+                                    self.cancelTimeoutTask(for: requestID)
+                                    callerContinuation.resume(throwing: watchError)
+                                }
+                                queueContinuation.resume(throwing: watchError)
+                            }
+                        })
+                    } as Void
+
+                    // Success - remove from queue
                     requestQueue.removeFirst()
                     pendingRequestCount = requestQueue.count
                     flushedCount += 1
 
                     recordSuccess()
-
-                    if let continuation = pendingRequests.removeValue(forKey: queuedRequest.wireRequest.requestID) {
-                        continuation.resume(returning: responseData)
-                    }
                 } catch {
                     // If not reachable, stop processing
                     if case WatchConnectionError.notReachable = error {
@@ -1007,10 +1059,6 @@ public final class WatchConnection: NSObject, ObservableObject {
                     pendingRequestCount = requestQueue.count
 
                     recordFailure()
-
-                    if let continuation = pendingRequests.removeValue(forKey: queuedRequest.wireRequest.requestID) {
-                        continuation.resume(throwing: error)
-                    }
                 }
             }
 
@@ -1078,6 +1126,8 @@ public final class WatchConnection: NSObject, ObservableObject {
 
             // Find pending request
             if let continuation = pendingRequests.removeValue(forKey: wireResponse.requestID) {
+                cancelTimeoutTask(for: wireResponse.requestID)
+
                 // Remove from queue if present
                 requestQueue.removeAll { $0.wireRequest.requestID == wireResponse.requestID }
                 pendingRequestCount = requestQueue.count
@@ -1157,6 +1207,7 @@ extension WatchConnection: WCSessionDelegate {
             } else {
                 // Encode the full WireRequest for processIncomingRequest
                 guard let requestData = try? localEncoder.encode(request) else {
+                    await self.emitDiagnostic(.requestEncodingFailed(requestType: request.typeName))
                     return
                 }
                 // Process request and get response
@@ -1290,42 +1341,3 @@ struct SendableContext: @unchecked Sendable {
     }
 }
 
-// MARK: - Multicast Stream
-
-/// A broadcast mechanism that supports multiple AsyncStream consumers.
-///
-/// Unlike a single AsyncStream.Continuation, this allows multiple subscribers
-/// to receive the same values. Each call to `makeStream()` returns a new
-/// AsyncStream that receives all future values.
-@MainActor
-final class MulticastStream<Element: Sendable> {
-    private var continuations: [UUID: AsyncStream<Element>.Continuation] = [:]
-
-    /// Creates a new AsyncStream that receives all values yielded to this multicast.
-    func makeStream() -> AsyncStream<Element> {
-        let id = UUID()
-        return AsyncStream { continuation in
-            self.continuations[id] = continuation
-            continuation.onTermination = { @Sendable [weak self] _ in
-                Task { @MainActor [weak self] in
-                    self?.continuations.removeValue(forKey: id)
-                }
-            }
-        }
-    }
-
-    /// Yields a value to all active streams.
-    func yield(_ value: Element) {
-        for continuation in continuations.values {
-            continuation.yield(value)
-        }
-    }
-
-    /// Finishes all active streams.
-    func finish() {
-        for continuation in continuations.values {
-            continuation.finish()
-        }
-        continuations.removeAll()
-    }
-}

@@ -54,6 +54,12 @@ public final class SharedState<State: Codable & Sendable & Equatable> {
     /// The current state value.
     public private(set) var value: State
 
+    /// The error from the last failed sync attempt, or `nil` if the last sync succeeded.
+    ///
+    /// This is set when `updateApplicationContext` fails (e.g., data too large,
+    /// session not activated). It is cleared on the next successful `update()` call.
+    public private(set) var lastSyncError: WatchConnectionError?
+
     // MARK: - Private Properties
 
     private let connection: WatchConnection
@@ -142,11 +148,20 @@ public final class SharedState<State: Codable & Sendable & Equatable> {
         var context = connection.session.applicationContext
         context[stateKey] = data
 
-        // Run updateApplicationContext off main thread to avoid blocking
+        // Run updateApplicationContext off main thread to avoid blocking.
+        // Use a non-detached Task to allow capturing self (MainActor-isolated)
+        // while still running the blocking call off the main thread.
         let session = connection.session
         let contextCopy = context
-        Task.detached(priority: .utility) {
-            try? session.updateApplicationContext(contextCopy)
+        Task { [weak self] in
+            do {
+                try await Task.detached(priority: .utility) {
+                    try session.updateApplicationContext(contextCopy)
+                }.value
+                self?.lastSyncError = nil
+            } catch {
+                self?.lastSyncError = WatchConnectionError(error: error)
+            }
         }
     }
 }

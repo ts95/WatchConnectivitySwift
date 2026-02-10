@@ -153,6 +153,16 @@ public enum DiagnosticEvent: Sendable {
 
     /// Application context was received from the counterpart.
     case applicationContextReceived
+
+    // MARK: - Internal Error Events
+
+    /// A received request could not be re-encoded for processing.
+    ///
+    /// This indicates an encoder configuration mismatch between the sender
+    /// and receiver, causing the request to be silently dropped.
+    ///
+    /// - Parameter requestType: The type name of the request that failed to encode.
+    case requestEncodingFailed(requestType: String)
 }
 
 // MARK: - CustomStringConvertible
@@ -200,6 +210,8 @@ extension DiagnosticEvent: CustomStringConvertible {
             return "File received: \(url.lastPathComponent)\(hasMetadata ? " (with metadata)" : "")"
         case .applicationContextReceived:
             return "Application context received"
+        case .requestEncodingFailed(let type):
+            return "Failed to re-encode received request: \(type)"
         }
     }
 }
