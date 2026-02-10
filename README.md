@@ -1,6 +1,6 @@
 # WatchConnectivitySwift
 
-![Version](https://img.shields.io/badge/version-5.1.0-blue.svg)
+![Version](https://img.shields.io/badge/version-5.2.0-blue.svg)
 ![Swift](https://img.shields.io/badge/Swift-6.0-orange.svg)
 ![iOS](https://img.shields.io/badge/iOS-17.0+-green.svg)
 ![watchOS](https://img.shields.io/badge/watchOS-10.0+-green.svg)
@@ -43,7 +43,7 @@ Add the following to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/ts95/WatchConnectivitySwift.git", from: "5.1.0")
+    .package(url: "https://github.com/ts95/WatchConnectivitySwift.git", from: "5.2.0")
 ]
 ```
 
