@@ -10,7 +10,7 @@ Add the following dependency to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/ts95/WatchConnectivitySwift.git", from: "5.0.0")
+    .package(url: "https://github.com/ts95/WatchConnectivitySwift.git", from: "5.1.0")
 ]
 ```
 
@@ -28,7 +28,7 @@ Then add `WatchConnectivitySwift` to your target's dependencies:
 1. Open your project in Xcode
 2. Go to File > Add Package Dependencies
 3. Enter the repository URL: `https://github.com/ts95/WatchConnectivitySwift.git`
-4. Select version 5.0.0 or later
+4. Select version 5.1.0 or later
 5. Add the package to both your iOS and watchOS targets
 
 ## Basic Setup
