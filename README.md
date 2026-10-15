@@ -527,6 +527,6 @@ MIT
 
 Created by [Toni Sucic](https://github.com/ts95).
 
-Co-authored by [Claude Opus 4.5](https://www.anthropic.com/claude) with [Claude Code](https://www.anthropic.com/claude-code).
+Co-authored by Claude.
 
 Contributions and feedback welcome!
