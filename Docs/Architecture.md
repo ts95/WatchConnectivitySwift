@@ -247,16 +247,15 @@ nonisolated func session(_ session: WCSession, didReceiveMessageData data: Data)
 The library is designed for testability:
 
 1. **WCSessionProviding Protocol**: Abstracts WCSession for mocking
-2. **MockWCSession**: Configurable mock for unit tests
-3. **FlakyWCSession**: Simulates unreliable connections
-4. **PreviewWCSession**: For SwiftUI previews
+2. **PreviewWCSession**: Public mock, for SwiftUI previews and apps' own tests
+3. **MockWCSession**, **FlakyWCSession**: The library's own test doubles (test target only)
 
 ```swift
 // Production
 let connection = WatchConnection(session: WCSession.default)
 
 // Testing
-let mock = MockWCSession()
-mock.sendMessageError = WatchConnectionError.notReachable
-let connection = WatchConnection(session: mock)
+let session = PreviewWCSession()
+session.sendMessageError = WatchConnectionError.notReachable
+let connection = WatchConnection(session: session)
 ```

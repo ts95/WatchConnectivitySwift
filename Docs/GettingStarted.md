@@ -10,7 +10,7 @@ Add the following dependency to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/ts95/WatchConnectivitySwift.git", from: "5.1.0")
+    .package(url: "https://github.com/ts95/WatchConnectivitySwift.git", from: "5.2.2")
 ]
 ```
 
@@ -28,7 +28,7 @@ Then add `WatchConnectivitySwift` to your target's dependencies:
 1. Open your project in Xcode
 2. Go to File > Add Package Dependencies
 3. Enter the repository URL: `https://github.com/ts95/WatchConnectivitySwift.git`
-4. Select version 5.1.0 or later
+4. Select version 5.2.2 or later
 5. Add the package to both your iOS and watchOS targets
 
 ## Basic Setup
@@ -217,7 +217,7 @@ let response = try await connection.send(request, retryPolicy: customPolicy)
 Control when requests are sent:
 
 ```swift
-// Queue if not reachable (default)
+// Don't require reachability: the strategy's fallback delivers it later (default)
 let response = try await connection.send(request, delivery: .queued)
 
 // Fail immediately if not reachable
@@ -285,8 +285,9 @@ class DocumentReceiver {
     }
 
     private func handleReceivedFile(_ file: ReceivedFile) {
-        // ⚠️ IMPORTANT: Move file synchronously!
-        // It will be deleted after this method returns
+        // ⚠️ IMPORTANT: Move the file right away. From `onFileReceived` it is deleted as
+        // soon as the callback returns; from `receivedFiles` it waits in a temporary
+        // folder, which the system clears from time to time.
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let destination = documents.appendingPathComponent(file.fileURL.lastPathComponent)
 

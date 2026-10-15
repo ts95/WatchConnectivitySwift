@@ -50,7 +50,7 @@ public init(
 |----------|------|-------------|
 | `activationState` | `Result<WCSessionActivationState, WatchConnectionError>` | Current session activation state |
 | `isReachable` | `Bool` | Whether counterpart is reachable |
-| `pendingRequestCount` | `Int` | Number of queued requests |
+| `pendingRequestCount` | `Int` | Number of requests sent as user info that are waiting for their response |
 | `activeFileTransferCount` | `Int` | Number of file transfers in progress |
 | `sessionHealth` | `SessionHealth` | Current health state |
 | `isPaired` | `Bool` | Whether Watch is paired (iOS only) |
@@ -126,26 +126,6 @@ public func register<R: WatchRequest>(
 **Parameters:**
 - `requestType`: The type of request to handle.
 - `handler`: An async closure that processes the request.
-
-#### connect()
-
-Activates the connection and attempts to establish connectivity.
-
-```swift
-public func connect() async
-```
-
-In active mode:
-- Queued requests are processed as soon as connectivity is available
-- Diagnostic events are emitted for connection attempts
-
-#### disconnect()
-
-Disconnects and cancels all pending requests.
-
-```swift
-public func disconnect()
-```
 
 #### waitForActivation(timeout:)
 
@@ -494,7 +474,7 @@ public enum DeliveryMode: Sendable, Hashable
 
 | Case | Description |
 |------|-------------|
-| `queued` | Queue if not reachable, send when connectivity restored (default) |
+| `queued` | Don't require reachability; the strategy's fallback (user info or context) gets the request there (default) |
 | `immediate` | Fail immediately if not reachable |
 
 ### Properties
@@ -642,7 +622,7 @@ public enum DiagnosticEvent: Sendable
 | Event | Description |
 |-------|-------------|
 | `requestQueued(requestType:queueSize:)` | Request queued |
-| `queueFlushed(count:)` | Queue flushed |
+| `queueFlushed(count:)` | No longer emitted; kept for source compatibility |
 | `requestExpired(requestType:)` | Request expired |
 
 ### Health Events
@@ -701,8 +681,8 @@ public protocol WCSessionProviding: AnyObject, Sendable
 ### Conforming Types
 
 - `WCSession` (via extension)
-- `MockWCSession` (for testing)
-- `FlakyWCSession` (for reliability testing)
+- `PreviewWCSession` (public, for SwiftUI previews and your own tests)
+- `MockWCSession` and `FlakyWCSession` (in the library's own test target only)
 
 ---
 

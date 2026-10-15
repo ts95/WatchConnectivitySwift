@@ -43,7 +43,7 @@ public final class WatchConnection: NSObject, ObservableObject {
     /// Whether the counterpart app is reachable for live messaging.
     @Published public private(set) var isReachable: Bool = false
 
-    /// Number of requests waiting to be sent.
+    /// Number of requests sent as user info that are waiting for their response.
     @Published public private(set) var pendingRequestCount: Int = 0
 
     /// Number of file transfers in progress.
@@ -84,8 +84,8 @@ public final class WatchConnection: NSObject, ObservableObject {
     ///
     /// This provides an alternative to `onFileReceived` using async/await patterns.
     ///
-    /// **Important:** You must process the file synchronously within the for-await loop body.
-    /// The file at `ReceivedFile.fileURL` will be deleted after your processing completes.
+    /// **Important:** The file at `ReceivedFile.fileURL` is in a temporary folder of its own,
+    /// which the system clears from time to time. Move it to a permanent location promptly.
     ///
     /// ```swift
     /// Task {
@@ -172,7 +172,7 @@ public final class WatchConnection: NSObject, ObservableObject {
     /// Pending continuations waiting for responses: [RequestID: Continuation]
     private var pendingRequests: [UUID: CheckedContinuation<Data, any Error>] = [:]
 
-    /// Queue for requests waiting to be sent when offline
+    /// Requests sent as user info that are waiting for their response
     private var requestQueue: [QueuedRequest] = []
 
     /// Active file transfers being tracked
@@ -899,6 +899,7 @@ public final class WatchConnection: NSObject, ObservableObject {
         )
         requestQueue.append(queuedRequest)
         pendingRequestCount = requestQueue.count
+        emitDiagnostic(.requestQueued(requestType: wireRequest.typeName, queueSize: requestQueue.count))
 
         let requestID = wireRequest.requestID
 
@@ -915,6 +916,7 @@ public final class WatchConnection: NSObject, ObservableObject {
                     // Remove from queue
                     self.requestQueue.removeAll { $0.wireRequest.requestID == requestID }
                     self.pendingRequestCount = self.requestQueue.count
+                    self.emitDiagnostic(.requestExpired(requestType: wireRequest.typeName))
                     cont.resume(throwing: WatchConnectionError.timeout)
                 }
             }
@@ -1332,7 +1334,7 @@ extension WatchConnection: WCSessionDelegate {
 
 // MARK: - Supporting Types
 
-/// A queued request waiting to be sent.
+/// A request sent as user info, waiting for its response.
 struct QueuedRequest: Sendable {
     let wireRequest: WireRequest
     let enqueuedAt: Date

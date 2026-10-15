@@ -1,6 +1,6 @@
 # WatchConnectivitySwift
 
-![Version](https://img.shields.io/badge/version-5.2.1-blue.svg)
+![Version](https://img.shields.io/badge/version-5.2.2-blue.svg)
 ![Swift](https://img.shields.io/badge/Swift-6.0-orange.svg)
 ![iOS](https://img.shields.io/badge/iOS-17.0+-green.svg)
 ![watchOS](https://img.shields.io/badge/watchOS-10.0+-green.svg)
@@ -43,7 +43,7 @@ Add the following to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/ts95/WatchConnectivitySwift.git", from: "5.2.1")
+    .package(url: "https://github.com/ts95/WatchConnectivitySwift.git", from: "5.2.2")
 ]
 ```
 
@@ -323,9 +323,10 @@ class FileTransferManager {
         }
 
         // Option 2: Async stream
+        // The file waits in a temporary folder (which the system clears from time to
+        // time) until you move it, so move it promptly
         Task {
             for await file in connection.receivedFiles {
-                // Process each received file
                 let destination = documentsDirectory.appendingPathComponent(file.fileURL.lastPathComponent)
                 try? FileManager.default.moveItem(at: file.fileURL, to: destination)
             }
@@ -475,22 +476,19 @@ The library is designed for testability. You can inject a mock session to test y
 
 ```swift
 // 📁 Tests/MyAppTests.swift
-// 💡 Use MockWCSession in your unit tests to simulate Watch/iPhone communication
+// 💡 Use PreviewWCSession in your unit tests to simulate Watch/iPhone communication
 
 import WatchConnectivitySwift
 
 // Create a mock session instead of a real WCSession
-let mockSession = MockWCSession()
-let connection = WatchConnection(session: mockSession)
+let session = PreviewWCSession()
+let connection = WatchConnection(session: session)
 
-// Configure the mock to return a specific response
-// This simulates what the counterpart device would send back
-mockSession.sendMessageResponse = try JSONEncoder().encode(
-    WireResponse(outcome: .success(responseData), requestID: UUID(), timestamp: Date())
-)
+// Configure the response the counterpart device would send back
+session.setMockResponse(MyResponse(result: "OK"), for: MyRequest.self)
 
 // Test your code - the mock handles the "network" layer
-let response = try await connection.send(MyRequest())
+let response = try await connection.send(MyRequest(data: "test"))
 ```
 
 ### E2E Tests
@@ -515,7 +513,7 @@ The Demo app includes an end-to-end test harness for verifying real iOS-watchOS 
 - **After simulator erase, WCSession may report `appInstalled: NO`** for the companion app even after re-pairing and re-installing. The script retries automatically with increasing waits, but persistent failures may require rebooting the watch simulator (`xcrun simctl shutdown <UDID> && xcrun simctl boot <UDID>`) or using `--no-clean`
 - Some failures require rebooting the watch simulator to resolve
 
-These tests are intended for manual verification and debugging, not CI automation. The unit tests with `MockWCSession` provide reliable, deterministic testing.
+These tests are intended for manual verification and debugging, not CI automation. The library's unit tests, which use a mock session, provide reliable, deterministic testing.
 
 ---
 

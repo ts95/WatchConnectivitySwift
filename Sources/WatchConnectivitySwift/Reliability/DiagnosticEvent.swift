@@ -82,19 +82,22 @@ public enum DiagnosticEvent: Sendable {
 
     // MARK: - Queue Events
 
-    /// A request was added to the queue (waiting for connectivity).
+    /// A request was sent as user info, and is waiting for the counterpart to receive it
+    /// and answer.
     ///
     /// - Parameters:
     ///   - requestType: The type name of the queued request.
-    ///   - queueSize: The total number of requests now in the queue.
+    ///   - queueSize: The total number of requests now waiting.
     case requestQueued(requestType: String, queueSize: Int)
 
-    /// The request queue was flushed after connectivity was restored.
+    /// No longer emitted: requests sent as user info are delivered by the system, and are
+    /// never sent again once connectivity is restored. Kept so that existing `switch`
+    /// statements still compile.
     ///
     /// - Parameter count: The number of requests that were sent.
     case queueFlushed(count: Int)
 
-    /// A queued request expired before it could be sent.
+    /// A request sent as user info got no response before its timeout.
     ///
     /// - Parameter requestType: The type name of the expired request.
     case requestExpired(requestType: String)

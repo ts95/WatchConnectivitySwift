@@ -102,6 +102,8 @@ struct SettingsView: View {
 
 **Important**: Only the latest value is synced. If you update multiple times before the counterpart receives an update, only the final value is delivered. This is WCSession's built-in behavior.
 
+The write happens off the main thread, since `updateApplicationContext` can block. Writes land in the order the updates were made, and writes from different `SharedState`s don't overwrite each other's keys.
+
 ## SwiftUI Integration
 
 ### With @Observable View Model (Recommended)
@@ -222,18 +224,23 @@ class AppCoordinator {
 
 ### 3. Handle Sync Failures
 
+`update()` only throws if the state can't be encoded. The sync itself happens afterwards, so its outcome is reported in `lastSyncError`, which is observable:
+
 ```swift
 do {
     try settings.update(newSettings)
-} catch WatchConnectionError.encodingFailed {
+} catch {
     // State couldn't be serialized
     showError("Failed to save settings")
-} catch {
-    // Other sync errors
-    // Note: State is updated locally even if sync fails
-    // It will be synced when connectivity is restored
+}
+
+// Later, or in a view: nil once the last sync succeeded
+if let error = settings.lastSyncError {
+    // e.g. .notActivated if the session wasn't active yet
 }
 ```
+
+The value is updated locally even when the sync fails, and it is not retried by itself: the counterpart gets it with the next successful `update()`.
 
 ### 4. Avoid Rapid Updates Before sendMessage
 

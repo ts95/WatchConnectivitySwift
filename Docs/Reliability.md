@@ -19,7 +19,7 @@ The library addresses these issues through:
 3. **Delivery Strategies** - Fallback transport mechanisms
 4. **Health Monitoring** - Detect and recover from persistent issues
 5. **Recovery Suggestions** - User-facing guidance for connectivity issues
-6. **Request Queuing** - Queue requests during offline periods
+6. **Request Queuing** - Requests sent as user info are tracked until they are answered
 
 ## Connection State
 
@@ -289,8 +289,8 @@ Task {
         // Queue events
         case .requestQueued(let type, let size):
             print("Queued: \(type), queue size: \(size)")
-        case .queueFlushed(let count):
-            print("Flushed \(count) queued requests")
+        case .requestExpired(let type):
+            print("No response to \(type) in time")
 
         // Health events
         case .healthChanged(let from, let to):
@@ -311,7 +311,7 @@ Task {
 
 ## Request Queuing
 
-When the counterpart is not reachable, requests can be queued:
+When the counterpart isn't reachable, a request can go as user info, which the system delivers later. Until its response arrives, it is tracked here:
 
 ```swift
 // Check pending requests
@@ -323,6 +323,8 @@ connection.cancelAllQueuedRequests()
 // Cancel specific request
 connection.cancelQueuedRequest(id: requestID)
 ```
+
+Cancelling stops waiting for the response. The user info itself has already been handed to the system, so the counterpart may still receive and handle it.
 
 ### Queue Behavior
 
@@ -396,13 +398,16 @@ struct LogEvent: FireAndForgetRequest {
 await connection.send(LogEvent(name: "screen_view", parameters: [:]))
 ```
 
-### 5. Test with FlakyWCSession
+### 5. Test Failures with PreviewWCSession
 
 ```swift
-// Simulate unreliable connection
-let flakySession = FlakyWCSession()
-flakySession.failureProbability = 0.3  // 30% failure rate
-let connection = WatchConnection(session: flakySession)
+// Simulate an unreachable counterpart, or failing messages
+let session = PreviewWCSession()
+session.isReachable = false
+session.sendMessageError = WatchConnectionError.deliveryFailed(reason: "test")
+let connection = WatchConnection(session: session)
 
 // Test that your app handles failures gracefully
 ```
+
+(The library's own tests use `FlakyWCSession`, which fails at random. It lives in the test target, so copy it if you want it.)
