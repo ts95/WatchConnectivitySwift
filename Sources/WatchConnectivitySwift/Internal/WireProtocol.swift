@@ -28,8 +28,10 @@ struct WireRequest: Codable, Sendable {
     let timestamp: Date
 
     /// Creates a wire request from a typed request.
-    init<R: WatchRequest>(request: R, isFireAndForget: Bool = false) throws {
-        let encoder = JSONEncoder()
+    ///
+    /// - Parameter encoder: Must match the decoder the receiving connection decodes
+    ///   payloads with, so pass the connection's own.
+    init<R: WatchRequest>(request: R, isFireAndForget: Bool = false, encoder: JSONEncoder = JSONEncoder()) throws {
         self.typeName = String(describing: R.self)
         self.payload = try encoder.encode(request)
         self.requestID = UUID()

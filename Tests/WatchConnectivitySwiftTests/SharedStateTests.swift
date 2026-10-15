@@ -189,6 +189,38 @@ struct SharedStateTests {
         #expect(state3.value.enabled == true, "ThirdState should be updated to enabled=true")
     }
 
+    @Test("SharedState is freed when nothing holds it")
+    @MainActor
+    func sharedStateIsFreed() async throws {
+        let mockSession = MockWCSession()
+        let connection = WatchConnection(session: mockSession)
+        weak var weakState: SharedState<TestState>?
+
+        do {
+            let state = SharedState(initialValue: TestState(count: 0), connection: connection)
+            weakState = state
+            // Let the observation task start waiting for contexts
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(weakState == nil)
+    }
+
+    @Test("Updating before activation reports the update as not synced")
+    @MainActor
+    func updateBeforeActivationReportsError() throws {
+        let mockSession = MockWCSession()
+        mockSession.activationState = .notActivated
+        let connection = WatchConnection(session: mockSession)
+        let state = SharedState(initialValue: TestState(count: 0), connection: connection)
+
+        try state.update(TestState(count: 1))
+
+        #expect(state.value.count == 1)
+        #expect(state.lastSyncError == .notActivated)
+    }
+
     @Test("Late SharedState instance receives future updates")
     @MainActor
     func lateSharedStateInstance() async throws {

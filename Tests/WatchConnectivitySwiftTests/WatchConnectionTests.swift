@@ -95,6 +95,97 @@ struct WatchConnectionTests {
         }
     }
 
+    @Test("Fire-and-forget request sent as a message reaches its handler")
+    @MainActor
+    func fireAndForgetMessageReachesHandler() async throws {
+        let mockSession = MockWCSession()
+        let connection = WatchConnection(session: mockSession)
+        let counter = TestCounter()
+
+        connection.register(FireAndForgetTestRequest.self) { [counter] _ in
+            await counter.increment()
+            return VoidResponse()
+        }
+
+        // Sent with sendMessageData and no reply handler, as a reachable counterpart does
+        let wireRequest = try WireRequest(request: FireAndForgetTestRequest(eventName: "test"), isFireAndForget: true)
+        mockSession.simulateReceivedMessage(try JSONEncoder().encode(wireRequest))
+
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(counter.value == 1)
+    }
+
+    @Test("A request in the application context is handled once, however often the context arrives")
+    @MainActor
+    func contextRequestHandledOnce() async throws {
+        let mockSession = MockWCSession()
+        let connection = WatchConnection(session: mockSession)
+        let counter = TestCounter()
+
+        connection.register(FireAndForgetTestRequest.self) { [counter] _ in
+            await counter.increment()
+            return VoidResponse()
+        }
+
+        let wireRequest = try WireRequest(request: FireAndForgetTestRequest(eventName: "test"), isFireAndForget: true)
+        let context: [String: Any] = ["WatchConnectivitySwift.FireAndForget": try JSONEncoder().encode(wireRequest)]
+
+        // The same context again, as happens when another key in it is updated
+        mockSession.simulateReceivedApplicationContext(context)
+        mockSession.simulateReceivedApplicationContext(context)
+
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(counter.value == 1)
+    }
+
+    @Test("Requests use the connection's encoder, so its decoder can read them")
+    @MainActor
+    func customCodersMatch() async throws {
+        let mockSession = MockWCSession()
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let connection = WatchConnection(session: mockSession, encoder: encoder, decoder: decoder)
+        let counter = TestCounter()
+
+        struct DatedRequest: FireAndForgetRequest {
+            let date: Date
+        }
+        connection.register(DatedRequest.self) { [counter] _ in
+            await counter.increment()
+            return VoidResponse()
+        }
+
+        // Sent as user info, the way it would be with .userInfoOnly
+        await connection.send(DatedRequest(date: Date()), strategy: .userInfoOnly)
+        let userInfo = try #require(mockSession.lastTransferredUserInfo)
+        mockSession.simulateReceivedUserInfo(userInfo)
+
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(counter.value == 1)
+    }
+
+    @Test("Being unreachable doesn't make the session unhealthy")
+    @MainActor
+    func unreachableIsNotUnhealthy() async {
+        let mockSession = MockWCSession()
+        mockSession.isReachable = false
+        let connection = WatchConnection(session: mockSession)
+
+        struct PingRequest: WatchRequest {
+            typealias Response = String
+        }
+        for _ in 0..<6 {
+            _ = try? await connection.send(PingRequest(), strategy: .messageOnly)
+        }
+
+        #expect(connection.sessionHealth.isHealthy)
+    }
+
     @Test("Unregistered handler returns error")
     @MainActor
     func unregisteredHandlerReturnsError() async throws {

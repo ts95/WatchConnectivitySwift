@@ -433,7 +433,10 @@ public struct ReceivedFile: @unchecked Sendable
 
 ### Important
 
-The file at `fileURL` will be deleted by the system after the receive handler returns. You must synchronously move or copy the file to a permanent location if you want to keep it.
+The system deletes a received file as soon as its delegate method returns, so the library moves it to a temporary folder of its own first, keeping its name.
+
+- With `onFileReceived`, the file is deleted after the callback returns. Move or copy it synchronously, within the callback, to keep it.
+- With `receivedFiles`, the file stays in the temporary directory, which the system clears from time to time. Move it promptly.
 
 ### Example
 
@@ -535,7 +538,7 @@ public init(maxAttempts: Int, timeout: Duration = .seconds(10))
 | `none` | 1 | 10s | No retries |
 | `patient` | 5 | 30s | Important requests |
 
-Retries use a fixed 200ms delay between attempts. The library automatically retries on transient errors (`.notReachable`, `.deliveryFailed`, `.replyFailed`).
+Retries use a fixed 200ms delay between attempts. The library automatically retries on errors that mean the request didn't arrive (`.notReachable`, `.deliveryFailed`). `.replyFailed` and `.timeout` aren't retried, since the request may already have run its handler.
 
 ---
 

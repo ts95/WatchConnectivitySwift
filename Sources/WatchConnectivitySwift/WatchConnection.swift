@@ -201,8 +201,19 @@ public final class WatchConnection: NSObject, ObservableObject {
     private var isWatchAppInstalledObservation: NSKeyValueObservation?
     #endif
 
-    /// Task for processing the request queue
-    private var queueProcessingTask: Task<Void, Never>?
+    /// How many times activation has completed, so that a recovery can tell its own
+    /// activation from an earlier one
+    private var activationCompletions = 0
+
+    /// Request IDs recently handled from user info, application context, or fire-and-forget
+    /// messages, oldest first. Those can arrive more than once (an application context is
+    /// re-sent whole with every update), and a handler must only run once per request.
+    private var handledRequestIDs: [UUID] = []
+    private static let handledRequestIDLimit = 256
+
+    /// Application context keys for requests sent through the context.
+    private nonisolated static let requestContextKey = "WatchConnectivitySwift.Request"
+    private nonisolated static let fireAndForgetContextKey = "WatchConnectivitySwift.FireAndForget"
 
     // MARK: - Initialization
 
@@ -240,7 +251,6 @@ public final class WatchConnection: NSObject, ObservableObject {
         isPairedObservation?.invalidate()
         isWatchAppInstalledObservation?.invalidate()
         #endif
-        queueProcessingTask?.cancel()
     }
 
     // MARK: - Setup
@@ -256,38 +266,41 @@ public final class WatchConnection: NSObject, ObservableObject {
     private func setupObservations() {
         guard let wcSession = _session as? WCSession else { return }
 
-        // Observe reachability changes (no delegate method for this)
-        reachabilityObservation = wcSession.observe(\.isReachable, options: [.new, .old]) { [weak self] _, change in
+        // The delegate's sessionReachabilityDidChange and sessionWatchStateDidChange are the
+        // documented way to hear about these. KVO is kept as a second source; both end up
+        // re-reading the session, so it doesn't matter which arrives first.
+        reachabilityObservation = wcSession.observe(\.isReachable, options: [.new]) { [weak self] _, _ in
             Task { @MainActor [weak self] in
-                guard let self, let isReachable = change.newValue else { return }
-                let previousValue = change.oldValue ?? false
-                self.isReachable = isReachable
-
-                // Emit diagnostic event if changed
-                if isReachable != previousValue {
-                    self.emitDiagnostic(.reachabilityChanged(isReachable: isReachable))
-                }
-
-                if isReachable {
-                    self.processQueuedRequests()
-                }
+                self?.refreshSessionState()
             }
         }
 
         #if os(iOS)
-        isPairedObservation = wcSession.observe(\.isPaired, options: [.new]) { [weak self] _, change in
+        isPairedObservation = wcSession.observe(\.isPaired, options: [.new]) { [weak self] _, _ in
             Task { @MainActor [weak self] in
-                guard let self, let isPaired = change.newValue else { return }
-                self.isPaired = isPaired
+                self?.refreshSessionState()
             }
         }
 
-        isWatchAppInstalledObservation = wcSession.observe(\.isWatchAppInstalled, options: [.new]) { [weak self] _, change in
+        isWatchAppInstalledObservation = wcSession.observe(\.isWatchAppInstalled, options: [.new]) { [weak self] _, _ in
             Task { @MainActor [weak self] in
-                guard let self, let isInstalled = change.newValue else { return }
-                self.isWatchAppInstalled = isInstalled
+                self?.refreshSessionState()
             }
         }
+        #endif
+    }
+
+    /// Re-reads reachability (and, on iOS, the watch's state) from the session.
+    private func refreshSessionState() {
+        let isReachable = _session.isReachable
+        if isReachable != self.isReachable {
+            self.isReachable = isReachable
+            emitDiagnostic(.reachabilityChanged(isReachable: isReachable))
+        }
+
+        #if os(iOS)
+        isPaired = _session.isPaired
+        isWatchAppInstalled = _session.isWatchAppInstalled
         #endif
     }
 
@@ -319,7 +332,7 @@ public final class WatchConnection: NSObject, ObservableObject {
         }
 
         // Create wire request
-        let wireRequest = try WireRequest(request: request, isFireAndForget: false)
+        let wireRequest = try WireRequest(request: request, isFireAndForget: false, encoder: encoder)
 
         // Send with retry logic
         let responseData = try await sendWithRetry(
@@ -359,7 +372,7 @@ public final class WatchConnection: NSObject, ObservableObject {
             try await ensureActivated()
 
             // Create wire request
-            let wireRequest = try WireRequest(request: request, isFireAndForget: true)
+            let wireRequest = try WireRequest(request: request, isFireAndForget: true, encoder: encoder)
 
             // Send without waiting for response
             try await sendFireAndForget(wireRequest: wireRequest, strategy: strategy)
@@ -628,7 +641,7 @@ public final class WatchConnection: NSObject, ObservableObject {
 
     /// Attempts to recover from an unhealthy session state.
     ///
-    /// This method re-activates the WCSession and flushes any pending requests.
+    /// This method re-activates the WCSession and waits for the activation to complete.
     /// Use this when `sessionHealth` indicates persistent issues.
     ///
     /// ```swift
@@ -639,26 +652,24 @@ public final class WatchConnection: NSObject, ObservableObject {
     public func attemptRecovery() async {
         emitDiagnostic(.recoveryAttempted)
 
-        // Re-activate session
+        // Re-activate session, and wait for that activation to complete: the state from an
+        // earlier one says nothing about whether this one worked
+        let completionsBefore = activationCompletions
         _session.activate()
 
-        // Wait for activation
-        do {
-            try await Task.sleep(for: .seconds(1))
-        } catch {
-            emitDiagnostic(.recoveryFailed(error: .cancelled))
-            return
+        let deadline = ContinuousClock.now + .seconds(5)
+        while activationCompletions == completionsBefore, ContinuousClock.now < deadline {
+            do {
+                try await Task.sleep(for: .milliseconds(50))
+            } catch {
+                emitDiagnostic(.recoveryFailed(error: .cancelled))
+                return
+            }
         }
 
-        // Check if activation succeeded
-        if case .success(.activated) = activationState {
-            // Reset health state
+        if activationCompletions != completionsBefore, case .success(.activated) = activationState {
             healthTracker.reset()
             updateHealthState()
-
-            // Flush pending requests
-            processQueuedRequests()
-
             emitDiagnostic(.recoverySucceeded)
         } else {
             emitDiagnostic(.recoveryFailed(error: .notActivated))
@@ -712,6 +723,32 @@ public final class WatchConnection: NSObject, ObservableObject {
         retryPolicy: RetryPolicy,
         timeout: Duration
     ) async throws -> Data {
+        // Health counts sends, not attempts: one send that tries three times is one
+        // failure. Not being reachable is the counterpart app being in the background,
+        // which is normal, so it doesn't count against the session at all.
+        do {
+            let result = try await attemptWithRetry(
+                wireRequest: wireRequest,
+                strategy: strategy,
+                retryPolicy: retryPolicy,
+                timeout: timeout
+            )
+            recordSuccess()
+            return result
+        } catch {
+            if WatchConnectionError(error: error) != .notReachable {
+                recordFailure()
+            }
+            throw error
+        }
+    }
+
+    private func attemptWithRetry(
+        wireRequest: WireRequest,
+        strategy: DeliveryStrategy,
+        retryPolicy: RetryPolicy,
+        timeout: Duration
+    ) async throws -> Data {
         let deadline = ContinuousClock.now + timeout
         let startTime = ContinuousClock.now
         var lastError: Error = WatchConnectionError.notReachable
@@ -720,7 +757,6 @@ public final class WatchConnection: NSObject, ObservableObject {
         while attempt < retryPolicy.maxAttempts {
             // Check timeout
             if ContinuousClock.now >= deadline {
-                recordFailure()
                 throw WatchConnectionError.timeout
             }
 
@@ -735,8 +771,6 @@ public final class WatchConnection: NSObject, ObservableObject {
                     timeout: deadline - ContinuousClock.now
                 )
 
-                // Success - record and emit diagnostic
-                recordSuccess()
                 let duration = ContinuousClock.now - startTime
                 emitDiagnostic(.messageSent(requestType: wireRequest.typeName, duration: duration))
 
@@ -752,30 +786,29 @@ public final class WatchConnection: NSObject, ObservableObject {
                     willRetry: willRetry
                 ))
 
-                // Check if we should try fallback
-                if let fallbackMethod = strategy.fallbackMethod {
+                // Fall back only when the request certainly didn't arrive. After a timeout
+                // or a failed reply it may well have, and the handler has run: sending it
+                // again another way would run it twice.
+                let didNotArrive = watchError == .notReachable || {
+                    if case .deliveryFailed = watchError { return true }
+                    return false
+                }()
+                if let fallbackMethod = strategy.fallbackMethod, didNotArrive, ContinuousClock.now < deadline {
                     emitDiagnostic(.fallbackUsed(from: strategy.primaryMethod, to: fallbackMethod))
 
-                    do {
-                        let result = try await sendViaMethod(
-                            wireRequest: wireRequest,
-                            method: fallbackMethod,
-                            timeout: deadline - ContinuousClock.now
-                        )
+                    // Not retried if it fails: the fallback queues the request for delivery,
+                    // so it is on its way, and retrying would send it again
+                    let result = try await sendViaMethod(
+                        wireRequest: wireRequest,
+                        method: fallbackMethod,
+                        timeout: deadline - ContinuousClock.now
+                    )
 
-                        // Fallback succeeded
-                        recordSuccess()
-                        let duration = ContinuousClock.now - startTime
-                        emitDiagnostic(.messageSent(requestType: wireRequest.typeName, duration: duration))
+                    let duration = ContinuousClock.now - startTime
+                    emitDiagnostic(.messageSent(requestType: wireRequest.typeName, duration: duration))
 
-                        return result
-                    } catch {
-                        lastError = error
-                    }
+                    return result
                 }
-
-                // Record failure
-                recordFailure()
 
                 // Check if error is retryable
                 if !retryPolicy.shouldRetry(error) {
@@ -855,11 +888,10 @@ public final class WatchConnection: NSObject, ObservableObject {
     }
 
     private func sendViaUserInfo(wireRequest: WireRequest, timeout: Duration) async throws -> Data {
-        // For userInfo, we queue the request and wait for the response via the reply mechanism
-        // Since transferUserInfo doesn't have a direct reply, we need to wait for an incoming message
-        // This is a simplified implementation - in practice you'd need a correlation mechanism
-
-        // Queue for sending
+        // transferUserInfo has no reply: the receiver answers with a message when it can,
+        // which `handleIncomingResponse` matches up by request ID. The system delivers the
+        // user info itself, so it is only tracked here (for `pendingRequestCount` and
+        // cancelling), never sent again.
         let queuedRequest = QueuedRequest(
             wireRequest: wireRequest,
             enqueuedAt: Date(),
@@ -922,9 +954,7 @@ public final class WatchConnection: NSObject, ObservableObject {
 
             // Send via applicationContext
             do {
-                var context = self._session.applicationContext
-                context["WatchConnectivitySwift.Request"] = requestData
-                try self._session.updateApplicationContext(context)
+                try self._session.updateApplicationContext(self.context(adding: requestData, forKey: Self.requestContextKey))
             } catch {
                 if let cont = self.pendingRequests.removeValue(forKey: requestID) {
                     self.cancelTimeoutTask(for: requestID)
@@ -935,39 +965,45 @@ public final class WatchConnection: NSObject, ObservableObject {
     }
 
     private func sendFireAndForget(wireRequest: WireRequest, strategy: DeliveryStrategy) async throws {
-        let requestData = try encoder.encode(wireRequest)
-
-        switch strategy.primaryMethod {
-        case .message:
-            if isReachable {
-                _session.sendMessageData(requestData, replyHandler: nil, errorHandler: nil)
-            } else if let fallback = strategy.fallbackMethod {
-                try await sendFireAndForgetViaMethod(wireRequest: wireRequest, method: fallback)
+        if strategy.primaryMethod == .message, !isReachable {
+            if let fallback = strategy.fallbackMethod {
+                try sendFireAndForget(wireRequest, via: fallback, fallback: nil)
             }
-        case .userInfo:
-            let userInfo = try WireUserInfo(request: wireRequest).toDictionary(encoder: encoder)
-            _session.transferUserInfo(userInfo)
-        case .context:
-            var context = _session.applicationContext
-            context["WatchConnectivitySwift.FireAndForget.\(wireRequest.requestID)"] = requestData
-            try _session.updateApplicationContext(context)
+            return
         }
+        try sendFireAndForget(wireRequest, via: strategy.primaryMethod, fallback: strategy.fallbackMethod)
     }
 
-    private func sendFireAndForgetViaMethod(wireRequest: WireRequest, method: DeliveryMethod) async throws {
+    private func sendFireAndForget(_ wireRequest: WireRequest, via method: DeliveryMethod, fallback: DeliveryMethod?) throws {
         switch method {
         case .message:
             let requestData = try encoder.encode(wireRequest)
-            _session.sendMessageData(requestData, replyHandler: nil, errorHandler: nil)
+            // `isReachable` can be true while messages fail. Rather than lose the request,
+            // send it the fallback way; the receiver ignores it if both arrive.
+            _session.sendMessageData(requestData, replyHandler: nil, errorHandler: { [weak self] _ in
+                guard let fallback else { return }
+                Task { @MainActor [weak self] in
+                    try? self?.sendFireAndForget(wireRequest, via: fallback, fallback: nil)
+                }
+            })
         case .userInfo:
             let userInfo = try WireUserInfo(request: wireRequest).toDictionary(encoder: encoder)
             _session.transferUserInfo(userInfo)
         case .context:
             let requestData = try encoder.encode(wireRequest)
-            var context = _session.applicationContext
-            context["WatchConnectivitySwift.FireAndForget.\(wireRequest.requestID)"] = requestData
-            try _session.updateApplicationContext(context)
+            try _session.updateApplicationContext(context(adding: requestData, forKey: Self.fireAndForgetContextKey))
         }
+    }
+
+    /// The current application context with a request in it under `key`.
+    ///
+    /// The context only holds the latest value of each key, so a request there replaces the
+    /// previous one. Keys of the form `FireAndForget.<id>`, which earlier versions added for
+    /// each request and never removed, are taken out.
+    private func context(adding requestData: Data, forKey key: String) -> [String: Any] {
+        var context = _session.applicationContext.filter { !$0.key.hasPrefix(Self.fireAndForgetContextKey + ".") }
+        context[key] = requestData
+        return context
     }
 
     // MARK: - Private: Activation
@@ -998,108 +1034,15 @@ public final class WatchConnection: NSObject, ObservableObject {
         throw WatchConnectionError.notActivated
     }
 
-    // MARK: - Private: Queue Processing
-
-    private func processQueuedRequests() {
-        guard !requestQueue.isEmpty else { return }
-
-        queueProcessingTask?.cancel()
-        queueProcessingTask = Task {
-            var flushedCount = 0
-
-            while !requestQueue.isEmpty && isReachable {
-                guard let queuedRequest = requestQueue.first else { break }
-                let requestID = queuedRequest.wireRequest.requestID
-
-                do {
-                    let requestData = try self.encoder.encode(queuedRequest.wireRequest)
-
-                    // Send the message directly instead of calling sendViaMessage,
-                    // which would overwrite the existing pendingRequests continuation.
-                    try await withCheckedThrowingContinuation { (queueContinuation: CheckedContinuation<Void, any Error>) in
-                        self._session.sendMessageData(requestData, replyHandler: { [weak self] responseData in
-                            Task { @MainActor in
-                                guard let self else { return }
-                                // Resume the original caller's continuation (from sendViaUserInfo)
-                                if let callerContinuation = self.pendingRequests.removeValue(forKey: requestID) {
-                                    self.cancelTimeoutTask(for: requestID)
-                                    callerContinuation.resume(returning: responseData)
-                                }
-                                // Resume the queue processing continuation
-                                queueContinuation.resume()
-                            }
-                        }, errorHandler: { [weak self] error in
-                            Task { @MainActor in
-                                guard let self else { return }
-                                let watchError = WatchConnectionError(error: error)
-                                if let callerContinuation = self.pendingRequests.removeValue(forKey: requestID) {
-                                    self.cancelTimeoutTask(for: requestID)
-                                    callerContinuation.resume(throwing: watchError)
-                                }
-                                queueContinuation.resume(throwing: watchError)
-                            }
-                        })
-                    } as Void
-
-                    // Success - remove from queue
-                    requestQueue.removeFirst()
-                    pendingRequestCount = requestQueue.count
-                    flushedCount += 1
-
-                    recordSuccess()
-                } catch {
-                    // If not reachable, stop processing
-                    if case WatchConnectionError.notReachable = error {
-                        break
-                    }
-
-                    // For other errors, fail this request and continue
-                    guard !requestQueue.isEmpty else { break }
-                    requestQueue.removeFirst()
-                    pendingRequestCount = requestQueue.count
-
-                    recordFailure()
-                }
-            }
-
-            // Emit diagnostic if we flushed any requests
-            if flushedCount > 0 {
-                emitDiagnostic(.queueFlushed(count: flushedCount))
-            }
-        }
-    }
-
     // MARK: - Private: Incoming Message Handling
 
-    /// Processes an incoming request and returns the response data.
-    ///
-    /// This method runs on MainActor to access handlers and state safely.
+    /// Processes an incoming request that arrived with a reply handler, and returns the
+    /// response data.
     private func processIncomingRequest(data: Data) async -> Data {
         do {
             let wireRequest = try decoder.decode(WireRequest.self, from: data)
-
-            // Emit diagnostic event
             emitDiagnostic(.messageReceived(requestType: wireRequest.typeName))
-
-            // Look up handler
-            guard let handler = handlers[wireRequest.typeName] else {
-                let error = WatchConnectionError.handlerNotRegistered(requestType: wireRequest.typeName)
-                let response = WireResponse.failure(error, requestID: wireRequest.requestID)
-                return (try? encoder.encode(response)) ?? Data()
-            }
-
-            // Execute handler
-            do {
-                let responseData = try await handler(wireRequest.payload)
-                // Use the overload that takes already-encoded Data (handler already encoded the response)
-                let response = WireResponse.success(responseData, requestID: wireRequest.requestID)
-                recordSuccess()
-                return try encoder.encode(response)
-            } catch {
-                let watchError = WatchConnectionError(error: error)
-                let response = WireResponse.failure(watchError, requestID: wireRequest.requestID)
-                return (try? encoder.encode(response)) ?? Data()
-            }
+            return await response(to: wireRequest)
         } catch {
             // Failed to decode request - send error response
             let watchError = WatchConnectionError.decodingFailed(description: error.localizedDescription)
@@ -1108,10 +1051,52 @@ public final class WatchConnection: NSObject, ObservableObject {
         }
     }
 
-    /// Processes a fire-and-forget request (no response needed).
-    private func processFireAndForgetRequest(typeName: String, payload: Data) async {
-        guard let handler = handlers[typeName] else { return }
-        _ = try? await handler(payload)
+    /// Runs the handler for a request, and returns the encoded response.
+    ///
+    /// Incoming requests don't count towards session health: they say nothing about whether
+    /// this side's own sends are getting through.
+    private func response(to wireRequest: WireRequest) async -> Data {
+        guard let handler = handlers[wireRequest.typeName] else {
+            let error = WatchConnectionError.handlerNotRegistered(requestType: wireRequest.typeName)
+            let response = WireResponse.failure(error, requestID: wireRequest.requestID)
+            return (try? encoder.encode(response)) ?? Data()
+        }
+
+        do {
+            let responseData = try await handler(wireRequest.payload)
+            // Use the overload that takes already-encoded Data (handler already encoded the response)
+            let response = WireResponse.success(responseData, requestID: wireRequest.requestID)
+            return try encoder.encode(response)
+        } catch {
+            let watchError = WatchConnectionError(error: error)
+            let response = WireResponse.failure(watchError, requestID: wireRequest.requestID)
+            return (try? encoder.encode(response)) ?? Data()
+        }
+    }
+
+    /// Handles a request that came some way other than a message with a reply handler: user
+    /// info, application context, or a fire-and-forget message.
+    ///
+    /// Those can arrive more than once (an application context is re-sent whole with every
+    /// update, and a fire-and-forget message that seems to fail is sent again the fallback
+    /// way), so each request is only handled the first time. A request that wants a response
+    /// gets it as a message, if the counterpart is reachable.
+    private func handleRequestWithoutReply(_ wireRequest: WireRequest) async {
+        guard !handledRequestIDs.contains(wireRequest.requestID) else {
+            return
+        }
+        handledRequestIDs.append(wireRequest.requestID)
+        if handledRequestIDs.count > Self.handledRequestIDLimit {
+            handledRequestIDs.removeFirst()
+        }
+
+        emitDiagnostic(.messageReceived(requestType: wireRequest.typeName))
+        if wireRequest.isFireAndForget {
+            guard let handler = handlers[wireRequest.typeName] else { return }
+            _ = try? await handler(wireRequest.payload)
+        } else {
+            sendResponseIfReachable(await response(to: wireRequest))
+        }
     }
 
     /// Sends a response if the counterpart is reachable.
@@ -1150,6 +1135,8 @@ extension WatchConnection: WCSessionDelegate {
         error: (any Error)?
     ) {
         Task { @MainActor in
+            self.activationCompletions += 1
+            self.refreshSessionState()
             if let error {
                 self.activationState = .failure(WatchConnectionError(error: error))
                 self.recordFailure()
@@ -1183,8 +1170,13 @@ extension WatchConnection: WCSessionDelegate {
         // Capture data before crossing isolation boundary
         let data = messageData
         Task { @MainActor in
-            // This could be a response or a fire-and-forget request
-            self.handleIncomingResponse(data: data)
+            // This could be a fire-and-forget request (sent without a reply handler)
+            // or a response to one of our requests
+            if let request = try? self.decoder.decode(WireRequest.self, from: data), request.isFireAndForget {
+                await self.handleRequestWithoutReply(request)
+            } else {
+                self.handleIncomingResponse(data: data)
+            }
         }
     }
 
@@ -1192,29 +1184,16 @@ extension WatchConnection: WCSessionDelegate {
         _ session: WCSession,
         didReceiveUserInfo userInfo: [String: Any]
     ) {
-        // Extract and decode on current thread to avoid sending non-Sendable across boundary
-        let localDecoder = JSONDecoder()
-        guard let wireUserInfoData = userInfo[WireUserInfo.key] as? Data,
-              let wireUserInfo = try? localDecoder.decode(WireUserInfo.self, from: wireUserInfoData) else {
+        // Extract the data on this thread: the dictionary itself can't cross into the task
+        guard let wireUserInfoData = userInfo[WireUserInfo.key] as? Data else {
             return
         }
-
-        let request = wireUserInfo.request
-        let localEncoder = JSONEncoder()
-        Task {
-            if request.isFireAndForget {
-                await self.processFireAndForgetRequest(typeName: request.typeName, payload: request.payload)
-            } else {
-                // Encode the full WireRequest for processIncomingRequest
-                guard let requestData = try? localEncoder.encode(request) else {
-                    await self.emitDiagnostic(.requestEncodingFailed(requestType: request.typeName))
-                    return
-                }
-                // Process request and get response
-                let responseData = await self.processIncomingRequest(data: requestData)
-                // Send response via message if reachable (check on MainActor)
-                await self.sendResponseIfReachable(responseData)
+        Task { @MainActor in
+            // Decoded with the connection's decoder, to match the encoder it was sent with
+            guard let wireUserInfo = try? self.decoder.decode(WireUserInfo.self, from: wireUserInfoData) else {
+                return
             }
+            await self.handleRequestWithoutReply(wireUserInfo.request)
         }
     }
 
@@ -1223,7 +1202,7 @@ extension WatchConnection: WCSessionDelegate {
         didReceiveApplicationContext applicationContext: [String: Any]
     ) {
         // Extract request data before crossing isolation boundaries
-        let requestData = applicationContext["WatchConnectivitySwift.Request"] as? Data
+        let requestData = [Self.requestContextKey, Self.fireAndForgetContextKey].compactMap { applicationContext[$0] as? Data }
 
         // Wrap the context to make it sendable (property list types are thread-safe)
         let sendableContext = SendableContext(applicationContext)
@@ -1236,13 +1215,12 @@ extension WatchConnection: WCSessionDelegate {
             self.applicationContextStream.yield(sendableContext)
         }
 
-        // Handle requests embedded in context
-        if let requestData {
-            Task {
-                // Process request and get response
-                let responseData = await self.processIncomingRequest(data: requestData)
-                // Send response via message if reachable
-                await self.sendResponseIfReachable(responseData)
+        // Handle requests embedded in context. Each update brings the whole context again,
+        // so a request already handled is skipped.
+        for data in requestData {
+            Task { @MainActor in
+                guard let request = try? self.decoder.decode(WireRequest.self, from: data) else { return }
+                await self.handleRequestWithoutReply(request)
             }
         }
     }
@@ -1254,8 +1232,24 @@ extension WatchConnection: WCSessionDelegate {
         didReceive file: WCSessionFile
     ) {
         // Capture values before crossing isolation boundary
-        let fileURL = file.fileURL
         let metadata = file.metadata
+
+        // The system deletes the file as soon as this method returns, but the handlers run
+        // later, on the main actor. Move it, synchronously, to a folder of its own that lasts
+        // until they have had it. The file keeps its name.
+        let holdingDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WatchConnectivitySwift-\(UUID().uuidString)", isDirectory: true)
+        let fileURL: URL
+        do {
+            try FileManager.default.createDirectory(at: holdingDirectory, withIntermediateDirectories: true)
+            let heldURL = holdingDirectory.appendingPathComponent(file.fileURL.lastPathComponent)
+            try FileManager.default.moveItem(at: file.fileURL, to: heldURL)
+            fileURL = heldURL
+        } catch {
+            // Nothing to hand on: the file is gone once this method returns
+            try? FileManager.default.removeItem(at: holdingDirectory)
+            return
+        }
 
         Task { @MainActor in
             let receivedFile = ReceivedFile(fileURL: fileURL, metadata: metadata)
@@ -1263,13 +1257,18 @@ extension WatchConnection: WCSessionDelegate {
                 fileURL: fileURL,
                 hasMetadata: metadata != nil
             ))
-            self.recordSuccess()
 
             // Notify via callback
             self.onFileReceived?(receivedFile)
 
-            // Emit to stream
-            self.receivedFilesStream.yield(receivedFile)
+            // Emit to stream. Stream subscribers handle the file in their own time, so it is
+            // only cleaned up here when there are none; otherwise it stays in the temporary
+            // directory, which the system clears.
+            if self.receivedFilesStream.hasSubscribers {
+                self.receivedFilesStream.yield(receivedFile)
+            } else {
+                try? FileManager.default.removeItem(at: holdingDirectory)
+            }
         }
     }
 
@@ -1302,7 +1301,19 @@ extension WatchConnection: WCSessionDelegate {
         }
     }
 
+    nonisolated public func sessionReachabilityDidChange(_ session: WCSession) {
+        Task { @MainActor in
+            self.refreshSessionState()
+        }
+    }
+
     #if os(iOS)
+    nonisolated public func sessionWatchStateDidChange(_ session: WCSession) {
+        Task { @MainActor in
+            self.refreshSessionState()
+        }
+    }
+
     nonisolated public func sessionDidBecomeInactive(_ session: WCSession) {
         Task { @MainActor in
             self.emitDiagnostic(.sessionBecameInactive)

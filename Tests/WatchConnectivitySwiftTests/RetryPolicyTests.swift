@@ -47,14 +47,14 @@ struct RetryPolicyTests {
 
         // Should retry on delivery failed
         #expect(policy.shouldRetry(WatchConnectionError.deliveryFailed(reason: "test")))
-
-        // Should retry on reply failed
-        #expect(policy.shouldRetry(WatchConnectionError.replyFailed(reason: "test")))
     }
 
     @Test("shouldRetry returns false for non-transient errors")
     func shouldNotRetryNonTransientErrors() {
         let policy = RetryPolicy.default
+
+        // Should NOT retry on reply failed: the handler has already run on the other side
+        #expect(!policy.shouldRetry(WatchConnectionError.replyFailed(reason: "test")))
 
         // Should NOT retry on timeout
         #expect(!policy.shouldRetry(WatchConnectionError.timeout))

@@ -67,6 +67,8 @@ public final class SharedState<State: Codable & Sendable & Equatable> {
     private let decoder: JSONDecoder
     private let stateKey: String
     private var observationTask: Task<Void, Never>?
+    /// The last write of this state to the application context, which the next one waits for
+    private var syncTask: Task<Void, Never>?
 
     // MARK: - Initialization
 
@@ -128,9 +130,12 @@ public final class SharedState<State: Codable & Sendable & Equatable> {
     }
 
     private func startObserving() {
+        // The stream is taken out before the loop, and `self` only held for one context at a
+        // time, so that waiting for the next context doesn't keep this object alive
+        let contexts = connection.receivedApplicationContexts
         observationTask = Task { [weak self] in
-            guard let self else { return }
-            for await context in self.connection.receivedApplicationContexts {
+            for await context in contexts {
+                guard let self else { return }
                 guard let data = context[self.stateKey] as? Data,
                       let remoteState = try? self.decoder.decode(State.self, from: data),
                       remoteState != self.value else {
@@ -142,26 +147,41 @@ public final class SharedState<State: Codable & Sendable & Equatable> {
     }
 
     private func syncToRemote() throws {
-        guard connection.session.activationState == .activated else { return }
+        guard connection.session.activationState == .activated else {
+            lastSyncError = .notActivated
+            return
+        }
 
         let data = try encoder.encode(value)
-        var context = connection.session.applicationContext
-        context[stateKey] = data
-
-        // Run updateApplicationContext off main thread to avoid blocking.
-        // Use a non-detached Task to allow capturing self (MainActor-isolated)
-        // while still running the blocking call off the main thread.
         let session = connection.session
-        let contextCopy = context
-        Task { [weak self] in
+        let key = stateKey
+
+        // Run updateApplicationContext off the main thread, where it can block. Each write
+        // waits for the one before it, so that an older value can't land after a newer one.
+        let previous = syncTask
+        syncTask = Task { [weak self] in
+            await previous?.value
             do {
-                try await Task.detached(priority: .utility) {
-                    try session.updateApplicationContext(contextCopy)
-                }.value
+                try await ApplicationContextWriter.shared.write(data, forKey: key, to: session)
                 self?.lastSyncError = nil
             } catch {
                 self?.lastSyncError = WatchConnectionError(error: error)
             }
         }
+    }
+}
+
+/// Writes keys into the application context one at a time.
+///
+/// The context is written whole, so writing a key means reading the context, changing it
+/// and writing it back. Two of those at once (from two `SharedState`s) would each write back
+/// a context without the other's key, and one key would be lost.
+actor ApplicationContextWriter {
+    static let shared = ApplicationContextWriter()
+
+    func write(_ data: Data, forKey key: String, to session: any WCSessionProviding) throws {
+        var context = session.applicationContext
+        context[key] = data
+        try session.updateApplicationContext(context)
     }
 }

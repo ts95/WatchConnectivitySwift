@@ -70,7 +70,7 @@ The central class that manages all watch connectivity operations.
 1. **Session Management**
    - Activates and monitors WCSession
    - Handles activation state changes
-   - Observes reachability via KVO
+   - Observes reachability through the session delegate (with KVO as a second source)
 
 2. **Message Routing**
    - Routes incoming requests to registered handlers
@@ -80,7 +80,8 @@ The central class that manages all watch connectivity operations.
 3. **Reliability**
    - Implements retry logic with fixed 200ms delay between attempts
    - Manages fallback delivery strategies
-   - Queues requests when offline (in-memory)
+   - Tracks requests sent as user info until their response arrives
+   - Handles each request only once, however often it arrives
 
 4. **Health Monitoring**
    - Tracks success/failure patterns
@@ -212,9 +213,11 @@ This is implemented using `MulticastStream`, which broadcasts incoming applicati
 The `HealthTracker` monitors communication patterns:
 
 ```
-healthy → (5 consecutive failures) → unhealthy
-unhealthy → (any success) → healthy
+healthy → (5 consecutive failed sends) → unhealthy
+unhealthy → (any successful send) → healthy
 ```
+
+Health counts this side's sends, once per `send` however many attempts it takes. A send that fails only because the counterpart isn't reachable doesn't count, since that is normal when its app is in the background, and incoming requests don't count either.
 
 When unhealthy, the library provides localized recovery suggestions to guide users.
 

@@ -14,6 +14,11 @@ import Foundation
 final class MulticastStream<Element: Sendable> {
     private var continuations: [UUID: AsyncStream<Element>.Continuation] = [:]
 
+    /// Whether any stream is currently subscribed.
+    var hasSubscribers: Bool {
+        !continuations.isEmpty
+    }
+
     /// Creates a new AsyncStream that receives all values yielded to this multicast.
     func makeStream() -> AsyncStream<Element> {
         let id = UUID()

@@ -4,7 +4,7 @@ A Swift library that simplifies communication between iOS and watchOS apps using
 
 ## Current Version
 
-**Version: 5.2.0**
+**Version: 5.2.1**
 
 ## Version Management
 
@@ -107,7 +107,7 @@ Tests/WatchConnectivitySwiftTests/
 
 4. **File transfers**: `FileTransfer` class for tracking outgoing transfers with progress, `ReceivedFile` struct for incoming files. Background transfers continue when app is suspended.
 
-5. **Minimal health tracking**: `SessionHealth` (healthy/unhealthy), `HealthTracker` (5 consecutive failures = unhealthy), `RecoverySuggestion` with localization support.
+5. **Minimal health tracking**: `SessionHealth` (healthy/unhealthy), `HealthTracker` (5 consecutive failed sends = unhealthy; unreachability doesn't count), `RecoverySuggestion` with localization support.
 
 ## Key Patterns
 
@@ -115,7 +115,7 @@ Tests/WatchConnectivitySwiftTests/
 - **ObservableObject**: `WatchConnection` and `SharedState` expose `@Published` properties for SwiftUI
 - **AsyncStream**: Diagnostic events, application contexts, files use continuation-based streams
 - **Protocol with associated types**: `WatchRequest` uses associated `Response` type for type safety
-- **Delegate-first design**: Data flows through WCSession delegate methods, not KVO (except for `isReachable`)
+- **Delegate-first design**: Data flows through WCSession delegate methods. Reachability and watch state come from `sessionReachabilityDidChange`/`sessionWatchStateDidChange`, with KVO as a second source
 - **Swift 6 strict concurrency**: Full `Sendable` compliance, `@preconcurrency import WatchConnectivity`
 - **Isolated deinit**: Uses Swift 6's `isolated deinit` feature for safe cleanup in `@MainActor` classes
 

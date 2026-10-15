@@ -29,10 +29,13 @@ public struct RetryPolicy: Sendable {
     }
 
     /// Returns true if the error should be retried.
+    ///
+    /// Only errors that mean the request didn't arrive are retried. A failed reply means the
+    /// handler on the other side has already run, and retrying would run it again.
     func shouldRetry(_ error: Error) -> Bool {
         if let watchError = error as? WatchConnectionError {
             switch watchError {
-            case .notReachable, .deliveryFailed, .replyFailed:
+            case .notReachable, .deliveryFailed:
                 return true
             default:
                 return false
@@ -40,7 +43,7 @@ public struct RetryPolicy: Sendable {
         }
         if let wcError = error as? WCError {
             switch wcError.code {
-            case .notReachable, .deliveryFailed, .messageReplyFailed:
+            case .notReachable, .deliveryFailed:
                 return true
             default:
                 return false

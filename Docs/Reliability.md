@@ -114,7 +114,9 @@ Time: 0ms    200ms    400ms    600ms
            (fixed)  (fixed)   (fixed)
 ```
 
-Retries use a fixed 200ms delay between attempts. The library automatically retries on transient errors like `.notReachable`, `.deliveryFailed`, and `.replyFailed`.
+Retries use a fixed 200ms delay between attempts. The library automatically retries on errors that mean the request didn't arrive: `.notReachable` and `.deliveryFailed`. It doesn't retry `.replyFailed` or `.timeout`, because the request may already have reached the other device and run its handler; sending it again would run the handler twice.
+
+The same goes for fallbacks: a strategy's fallback method is only used when the primary method certainly didn't deliver the request.
 
 ## Delivery Strategies
 
@@ -324,9 +326,9 @@ connection.cancelQueuedRequest(id: requestID)
 
 ### Queue Behavior
 
-1. **Automatic queueing**: Requests are queued when offline (depending on delivery mode)
-2. **Automatic flush**: Queued requests are sent when connectivity is restored
-3. **In-memory**: Queue is held in memory (not persisted across app termination)
+1. **Delivered by the system**: A request sent as user info is handed to `transferUserInfo`, which keeps it until it is delivered, even across app launches. It is sent only that way, never again as a message.
+2. **Tracked until answered**: Until its response arrives (or it times out), the request counts in `pendingRequestCount` and can be cancelled.
+3. **Handled once**: Requests that arrive as user info, through the application context, or as fire-and-forget messages are remembered by ID on the receiving side, and a request that arrives again is not handled again.
 
 ## Best Practices
 
